@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Bot API - FastAPI</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #25D366;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .endpoint {
+            background: #f8f9fa;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            border-left: 4px solid #25D366;
+        }
+        .endpoint h2 {
+            color: #333;
+            margin-top: 0;
+        }
+        .method {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 12px;
+            margin-right: 10px;
+        }
+        .get { background: #61affe; color: white; }
+        .post { background: #49cc90; color: white; }
+        .status-connected { color: #28a745; font-weight: bold; }
+        .status-disconnected { color: #dc3545; font-weight: bold; }
+        button {
+            background: #25D366;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background: #128C7E;
+        }
+        .result {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 10px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .qr-code {
+            text-align: center;
+            margin: 20px 0;
+        }
+        .qr-code img {
+            max-width: 300px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 WhatsApp Bot API</h1>
+        <p style="text-align: center; color: #666;">API simplificada para automação do WhatsApp</p>
+
+        <div class="endpoint">
+            <h2>
+                <span class="method get">GET</span>
+                /status
+            </h2>
+            <p><strong>Descrição:</strong> Verifica se o WhatsApp está conectado. Se não estiver, retorna o QR Code para conexão.</p>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>connected: true/false</code> - Status da conexão</li>
+                <li><code>qrCode: string</code> - QR Code em base64 (se não conectado)</li>
+                <li><code>error: string</code> - Mensagem de erro (se houver)</li>
+            </ul>
+            <button id="btnStatus" onclick="checkStatus()">Verificar Status</button>
+            <div id="statusResult" class="result" style="display: none;"></div>
+            <div id="qrCodeResult" class="qr-code" style="display: none;"></div>
+        </div>
+
+        <div class="endpoint">
+            <h2>
+                <span class="method post">POST</span>
+                /sendMessage
+            </h2>
+            <p><strong>Descrição:</strong> Envia uma mensagem de texto via WhatsApp.</p>
+            <p><strong>Parâmetros:</strong></p>
+            <ul>
+                <li><code>phone: string</code> - Número de telefone (máx. 22 caracteres)</li>
+                <li><code>message: string</code> - Texto da mensagem (máx. 800 caracteres)</li>
+            </ul>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>success: boolean</code> - Se a mensagem foi enviada</li>
+                <li><code>phone: string</code> - Número do telefone</li>
+                <li><code>message: string</code> - Mensagem de status</li>
+            </ul>
+            <button id="btnSendMessage" onclick="sendMessage()">Enviar Mensagem</button>
+            <div id="sendMessageResult" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="endpoint">
+            <h2>
+                <span class="method get">GET</span>
+                /sendMessage
+            </h2>
+            <p><strong>Descrição:</strong> Envia uma mensagem de texto via WhatsApp (método GET).</p>
+            <p><strong>Parâmetros:</strong></p>
+            <ul>
+                <li><code>phone: string</code> - Número de telefone (máx. 22 caracteres)</li>
+                <li><code>message: string</code> - Texto da mensagem (máx. 800 caracteres)</li>
+            </ul>
+            <button onclick="sendMessageGet()">Enviar Mensagem (GET)</button>
+            <div id="sendMessageGetResult" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="endpoint">
+            <h2>
+                <span class="method get">GET</span>
+                /profile
+            </h2>
+            <p><strong>Descrição:</strong> Obtém informações do perfil do WhatsApp conectado.</p>
+            <p><strong>Resposta:</strong></p>
+        <ul>
+                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                <li><code>profile: object</code> - Dados do perfil (nome, foto, etc.)</li>
+        </ul>
+            <button onclick="getProfile()">Obter Perfil</button>
+            <div id="profileResult" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="endpoint">
+            <h2>
+                <span class="method get">GET</span>
+                /screenshot
+            </h2>
+            <p><strong>Descrição:</strong> Captura um screenshot completo da tela do WhatsApp Web.</p>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                <li><code>screenshot: string</code> - Screenshot em base64</li>
+                <li><code>path: string</code> - Caminho do arquivo salvo</li>
+            </ul>
+            <button onclick="getScreenshot()">Capturar Screenshot</button>
+            <div id="screenshotResult" class="result" style="display: none;"></div>
+            <div id="screenshotImage" class="qr-code" style="display: none;"></div>
+        </div>
+
+        <div class="endpoint">
+            <h2>
+                <span class="method post">POST</span>
+                /reset
+            </h2>
+            <p><strong>Descrição:</strong> Recarrega completamente a tela do WhatsApp Web (simula Ctrl+Shift+R).</p>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                <li><code>message: string</code> - Mensagem de status</li>
+            </ul>
+            <button id="btnReset" onclick="resetWhatsapp()">Resetar WhatsApp (Ctrl+Shift+R)</button>
+            <div id="resetResult" class="result" style="display:none;"></div>
+        </div>
+
+        <div style="text-align: center; margin-top: 40px; color: #666;">
+            <p>📖 <a href="/docs" target="_blank">Documentação Swagger UI</a></p>
+        </div>
+
+    </div>
+
+    <script>
+function checkStatus() {
+    const btn = document.getElementById('btnStatus');
+    btn.disabled = true;
+    btn.textContent = 'Aguarde...';
+
+    fetch('/status')
+        .then(response => response.json())
+        .then(data => {
+            const resultDiv = document.getElementById('statusResult');
+            const qrDiv = document.getElementById('qrCodeResult');
+            
+            resultDiv.style.display = 'block';
+            qrDiv.style.display = 'none';
+            
+            if (data.connected) {
+                resultDiv.innerHTML = `<span class="status-connected">✅ Conectado!</span>`;
+            } else {
+                resultDiv.innerHTML = `<span class="status-disconnected">❌ Não conectado</span>`;
+                if (data.qrCode) {
+                    qrDiv.style.display = 'block';
+                    qrDiv.innerHTML = `<h3>📱 QR Code para conexão:</h3><img src="${data.qrCode}" alt="QR Code">`;
+                }
+            }
+        })
+        .catch(error => {
+            document.getElementById('statusResult').style.display = 'block';
+            document.getElementById('statusResult').innerHTML = `Erro: ${error}`;
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = 'Verificar Status';
+        });
+}
+
+        function sendMessage() {
+            const btn = document.getElementById('btnSendMessage');
+            btn.disabled = true;
+            btn.textContent = 'Aguarde...';
+
+            const phone = prompt('Digite o número de telefone:');
+            const message = prompt('Digite a mensagem:');
+            if (!phone || !message) return;
+
+            const unic_sent = confirm('Marque OK para envio único (não enviar se já enviado). Cancelar para envio normal.');
+
+            fetch('/sendMessage', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    phone: phone,
+                    message: message,
+                    unic_sent: unic_sent
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                const resultDiv = document.getElementById('sendMessageResult');
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = JSON.stringify(data, null, 2);
+            })
+            .catch(error => {
+                document.getElementById('sendMessageResult').style.display = 'block';
+                document.getElementById('sendMessageResult').innerHTML = `Erro: ${error}`;
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.textContent = 'Enviar Mensagem';
+            });
+        }
+
+        function sendMessageGet() {
+            const btn = document.querySelector('button[onclick="sendMessageGet()"]');
+            btn.disabled = true;
+            btn.textContent = 'Aguarde...';
+
+            const phone = prompt('Digite o número de telefone:');
+            const message = prompt('Digite a mensagem:');
+            if (!phone || !message) {
+                btn.disabled = false;
+                btn.textContent = 'Enviar Mensagem (GET)';
+                return;
+            }
+
+            const unic_sent = confirm('Marque OK para envio único (não enviar se já enviado). Cancelar para envio normal.');
+
+            const url = `/sendMessage?phone=${encodeURIComponent(phone)}&message=${encodeURIComponent(message)}&unic_sent=${unic_sent}`;
+
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    const resultDiv = document.getElementById('sendMessageGetResult');
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = JSON.stringify(data, null, 2);
+                })
+                .catch(error => {
+                    document.getElementById('sendMessageGetResult').style.display = 'block';
+                    document.getElementById('sendMessageGetResult').innerHTML = `Erro: ${error}`;
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                    btn.textContent = 'Enviar Mensagem (GET)';
+                });
+        }
+
+        function getProfile() {
+            const btn = document.querySelector('button[onclick="getProfile()"]');
+            btn.disabled = true;
+            btn.textContent = 'Aguarde...';
+
+            fetch('/profile')
+                .then(response => response.json())
+                .then(data => {
+                    const resultDiv = document.getElementById('profileResult');
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = JSON.stringify(data, null, 2);
+                })
+                .catch(error => {
+                    document.getElementById('profileResult').style.display = 'block';
+                    document.getElementById('profileResult').innerHTML = `Erro: ${error}`;
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                    btn.textContent = 'Obter Perfil';
+                });
+        }
+
+        function getScreenshot() {
+            const btn = document.querySelector('button[onclick="getScreenshot()"]');
+            btn.disabled = true;
+            btn.textContent = 'Aguarde...';
+
+            fetch('/screenshot')
+                .then(response => response.json())
+                .then(data => {
+                    const resultDiv = document.getElementById('screenshotResult');
+                    const imageDiv = document.getElementById('screenshotImage');
+                    
+                    resultDiv.style.display = 'none';
+                    imageDiv.style.display = 'none';
+                    
+                    if (data.success && data.screenshot) {
+                        imageDiv.style.display = 'block';
+                        imageDiv.innerHTML = `<h3>📸 Screenshot da tela:</h3><img src="${data.screenshot}" alt="Screenshot" style="max-width: 100%; height: auto;">`;
+                    } else {
+                        resultDiv.style.display = 'block';
+                        resultDiv.innerHTML = JSON.stringify(data, null, 2);
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('screenshotResult').style.display = 'block';
+                    document.getElementById('screenshotResult').innerHTML = `Erro: ${error}`;
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                    btn.textContent = 'Capturar Screenshot';
+                });
+        }
+
+        function resetWhatsapp() {
+            const btn = document.getElementById('btnReset');
+            btn.disabled = true;
+            btn.textContent = 'Aguarde...';
+
+            fetch('/reset', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    const resultDiv = document.getElementById('resetResult');
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = data.message || 'Erro desconhecido';
+                })
+                .catch(error => {
+                    document.getElementById('resetResult').style.display = 'block';
+                    document.getElementById('resetResult').innerHTML = `Erro: ${error}`;
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                    btn.textContent = 'Resetar WhatsApp (Ctrl+Shift+R)';
+                });
+        }
+    </script>
+</body>
+</html>

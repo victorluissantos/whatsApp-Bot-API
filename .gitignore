@@ -1,0 +1,5 @@
+__pycache__/
+chrome-data*
+static/tmp/*
+erros_log.txt
+.env
