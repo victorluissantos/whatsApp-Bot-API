@@ -170,6 +170,27 @@
 
         <div class="endpoint">
             <h2>
+                <span class="method get">GET</span>
+                /getChats
+            </h2>
+            <p><strong>Descrição:</strong> Obtém a lista de conversas do WhatsApp com informações detalhadas.</p>
+            <p><strong>Parâmetros:</strong></p>
+            <ul>
+                <li><code>limit: int</code> - Número de chats a retornar (1-50, padrão: 10)</li>
+            </ul>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                <li><code>chats: array</code> - Lista de chats com nome, telefone, última mensagem, data/hora, foto e mensagens não lidas</li>
+                <li><code>total: int</code> - Total de chats retornados</li>
+                <li><code>limit: int</code> - Limite usado na consulta</li>
+            </ul>
+            <button onclick="getChats()">Obter Chats</button>
+            <div id="getChatsResult" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="endpoint">
+            <h2>
                 <span class="method post">POST</span>
                 /reset
             </h2>
@@ -347,6 +368,31 @@ function checkStatus() {
                 .finally(() => {
                     btn.disabled = false;
                     btn.textContent = 'Capturar Screenshot';
+                });
+        }
+
+        function getChats() {
+            const btn = document.querySelector('button[onclick="getChats()"]');
+            btn.disabled = true;
+            btn.textContent = 'Aguarde...';
+
+            const limit = prompt('Digite o número de chats a retornar (1-50, padrão: 10):');
+            const url = `/getChats?limit=${limit || 10}`;
+
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    const resultDiv = document.getElementById('getChatsResult');
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = JSON.stringify(data, null, 2);
+                })
+                .catch(error => {
+                    document.getElementById('getChatsResult').style.display = 'block';
+                    document.getElementById('getChatsResult').innerHTML = `Erro: ${error}`;
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                    btn.textContent = 'Obter Chats';
                 });
         }
 

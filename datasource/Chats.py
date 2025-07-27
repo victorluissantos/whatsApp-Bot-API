@@ -1,64 +1,16 @@
 from selenium import webdriver
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException
 from selenium.common.exceptions import TimeoutException
-from decouple import Config, RepositoryEnv
 from datetime import datetime
-# Removido import do Flask - não necessário para FastAPI
-from PIL import Image
-from io import BytesIO
-
-import urllib.request
-import urllib.parse
 import requests
-import urllib
-import PIL, sys
-import json
 import time
-import shutil
-import sys
-import os
-import re
 
 
 class Run:
-
-    def webhook(self, navegador, bucket=None, method="POST"):
-
-        while True:
-            chatList = [{'msg':'Nenhuma mensagem não lida'}]
-
-            try:
-                # Verifica se há elementos não lidos na lista de chat
-                try:
-                    navegador.find_element_by_xpath('//span[@aria-label="Não lidas"] | //span[contains(@aria-label, "mensagem não lida")]')
-
-                    chatList = self.getUnreadChats(navegador)
-
-                    # self.sendToBucket(chatList, bucket, method)
-                    if any(chat.get('total') and int(chat['total']) >= 1 for chat in chatList):
-                        self.sendToBucket(chatList, bucket, method)
-                    
-                    time.sleep(5)
-                    
-                    # else:
-                    #     self.sendToBucket([{'nao':'total de 1 ou mais nao localizado'}], bucket, method)
-                    #     time.sleep(5)
-
-                except NoSuchElementException:
-                    # self.sendToBucket([{'excpetion':'line 53'}], bucket, method)
-                    pass  # Se não encontrar elementos, continua sem chamar sendToBucket
-
-            except TimeoutException:
-                # self.sendToBucket([{'excpetion':'line 57'}], bucket, method)
-                webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
-                time.sleep(10)
-
 
     def getUnreadChats(self, navegador):
         try:
@@ -78,10 +30,7 @@ class Run:
             except Exception as e:
 
                 webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
-                # chatList.append({'excpetion':str(e)})
                 time.sleep(1)
-                # print("[DC-gU45] - Please, unread list in your instancie are connect!")
-                # return chatList
 
             try:
                 # Aguarde até que a lista de chats esteja presente
@@ -136,106 +85,488 @@ class Run:
             time.sleep(1)
             return f"An error occurred: {e}"
 
-    def getConversation(self, navegador, telefone):
-        if not telefone.startswith("+55"):
-            telefone = "+55" + telefone
-
-        webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
-        time.sleep(0.5)
-
+    def debugWhatsAppStatus(self, navegador):
+        """
+        Método de debug para verificar o status do WhatsApp
+        """
         try:
-            ActionChains(navegador).key_down(Keys.CONTROL).key_down(Keys.ALT).send_keys("n").perform()
-        except (NoSuchElementException, TimeoutException):
-            try:
-                element = navegador.find_element(By.XPATH, '//button[@title="Nova conversa"]')
-            except (NoSuchElementException, TimeoutException):
-                element = navegador.find_element(By.XPATH, '//div[@title="Nova conversa"]')
+            print("=== DEBUG: Verificando status do WhatsApp ===")
             
-            navegador.execute_script("arguments[0].click();", element)
-
-        time.sleep(0.3)
-
-        try:
-            element = WebDriverWait(navegador, 2).until(
-                EC.presence_of_element_located((By.XPATH, '/html/body/div[1]/div/div[2]/div[2]/div[1]/span/div/span/div/div[1]/div[2]/div[2]/div/div[1]/p'))
-            )
-        except (NoSuchElementException, TimeoutException):
-            try:
-                element = WebDriverWait(navegador, 2).until(
-                    EC.presence_of_element_located((By.XPATH, '/html/body/div[1]/div/div/div[3]/div/div[2]/div[1]/span/div/span/div/div[1]/div[2]/div/div/div[1]/p'))
-                )
-            except (NoSuchElementException, TimeoutException):
-                element = WebDriverWait(navegador, 2).until(
-                    EC.presence_of_element_located((By.XPATH, '//*[@id="app"]/div/div[3]/div[2]/div[1]/span/div/span/div/div[1]/div[2]/div[2]/div/div/p'))
-                )
-
-        element.clear()
-        time.sleep(0.2)
-
-        for char in telefone:
-            element.send_keys(char)
-            time.sleep(0.1)
-
-        time.sleep(1)
-        element.send_keys(Keys.RETURN)
-
-        try:
-            # Aguarde até carregar a conversa se houver
-            main = WebDriverWait(navegador, 20).until(
-                EC.presence_of_element_located((By.ID, 'main'))
-            )
-
-            messages = main.find_elements(By.CSS_SELECTOR, '[data-pre-plain-text]')
-
-            mensagens = []
-            is_sender = None
-
-            for message in reversed(messages):
-                data_id = message.get_attribute('data-id')
-
-                if data_id:
-                    is_sender = data_id == "true_"
-
-                message_info = self.extract_message_info(message)
-                mensagens.append(message_info)
-
-            hasChat = bool(messages)
-            webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
+            # Verificar URL
+            current_url = navegador.current_url
+            print(f"URL atual: {current_url}")
             
-            return {
-                'messages': mensagens,
-                'hasChat': hasChat,
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'status': True,
-                'error': None
-            }
-
-        except NoSuchElementException:
-            webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
-
-            return {
-                'messages': [],
-                'hasChat': False,
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'status': False,
-                'error': True
-            }
-
-    def extract_message_info(self, element):
-        msg = element.text.strip()
-        timestamp = element.get_attribute('data-pre-plain-text')
-        if timestamp:
+            # Verificar se estamos no WhatsApp Web
+            if "web.whatsapp.com" not in current_url:
+                print("❌ Não estamos no WhatsApp Web!")
+                return False
+            
+            # Verificar se há elementos de carregamento
             try:
-                origin = timestamp.split('] ')[1].split(': ')[0]
-                # Extrair a parte numérica da string de timestamp
-                timestamp_str = timestamp.split(']')[0].replace('[', '').strip()
-                timestamp = datetime.strptime(timestamp_str, '%H:%M, %d/%m/%Y').strftime('%d/%m/%Y %H:%M')
+                loading_elements = navegador.find_elements(By.XPATH, "//div[contains(@class, 'loading') or contains(@class, 'spinner')]")
+                if loading_elements:
+                    print(f"⚠️ Elementos de carregamento encontrados: {len(loading_elements)}")
+            except:
+                pass
+            
+            # Verificar se há QR code
+            try:
+                qr_elements = navegador.find_elements(By.XPATH, "//canvas[contains(@class, 'qr') or contains(@class, 'QR')]")
+                if qr_elements:
+                    print("⚠️ QR Code encontrado - WhatsApp não está logado!")
+                    return False
+            except:
+                pass
+            
+            # Verificar se há elementos de chat
+            try:
+                chat_elements = navegador.find_elements(By.XPATH, "//div[@role='listitem']")
+                print(f"📱 Elementos de chat encontrados: {len(chat_elements)}")
+            except:
+                print("❌ Nenhum elemento de chat encontrado")
+            
+            # Verificar aria-labels
+            try:
+                aria_elements = navegador.find_elements(By.XPATH, "//div[@aria-label]")
+                print(f"🏷️ Elementos com aria-label: {len(aria_elements)}")
+                for i, elem in enumerate(aria_elements[:10]):  # Mostrar os primeiros 10
+                    aria_label = elem.get_attribute('aria-label')
+                    if aria_label:
+                        print(f"  {i+1}. {aria_label}")
             except Exception as e:
-                print(f"Erro ao converter timestamp: {e}")
-                origin = timestamp = None
+                print(f"❌ Erro ao buscar aria-labels: {e}")
+            
+            print("=== FIM DEBUG ===")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Erro no debug: {e}")
+            return False
 
-        return {"msg": msg, "datetime": timestamp, "origin":origin}
+    def getAllChats(self, navegador, limit=10):
+        try:
+            webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
+            time.sleep(1)
 
+            # Executar debug primeiro
+            self.debugWhatsAppStatus(navegador)
+
+            chatList = []
+
+            # DEBUG: Verificar se estamos na página correta
+            current_url = navegador.current_url
+            print(f"URL atual: {current_url}")
+            
+            # DEBUG: Verificar se há elementos na página
+            try:
+                body = navegador.find_element(By.TAG_NAME, "body")
+                print(f"Body encontrado: {body}")
+            except Exception as e:
+                print(f"Erro ao encontrar body: {e}")
+                return chatList
+
+            # DEBUG: Tentar encontrar qualquer div com aria-label
+            try:
+                all_aria_labels = navegador.find_elements(By.XPATH, "//div[@aria-label]")
+                print(f"Total de elementos com aria-label: {len(all_aria_labels)}")
+                for i, elem in enumerate(all_aria_labels[:5]):  # Mostrar apenas os primeiros 5
+                    aria_label = elem.get_attribute('aria-label')
+                    print(f"Elemento {i+1} aria-label: {aria_label}")
+            except Exception as e:
+                print(f"Erro ao buscar aria-labels: {e}")
+
+            # Aguarde até que a lista de conversas esteja presente - tentar múltiplos idiomas
+            lista_conversas_block = None
+            chat_list_selectors = [
+                '//div[@aria-label="Lista de conversas"]',  # Português
+                '//div[@aria-label="Chat list"]',  # Inglês
+                '//div[@aria-label="Conversation list"]',  # Inglês alternativo
+                '//div[@role="grid" and @aria-label]',  # Genérico
+                '//div[contains(@class, "x1y332i5") and @role="grid"]'  # Por classe
+            ]
+            
+            for selector in chat_list_selectors:
+                try:
+                    print(f"Tentando seletor: {selector}")
+                    lista_conversas_block = WebDriverWait(navegador, 5).until(
+                        EC.presence_of_element_located((By.XPATH, selector))
+                    )
+                    print(f"Lista de conversas encontrada com seletor: {selector}")
+                    break
+                except TimeoutException:
+                    print(f"Seletor não encontrado: {selector}")
+                    continue
+            
+            if not lista_conversas_block:
+                print("Nenhum seletor de lista de conversas funcionou")
+                return chatList
+
+            # Encontrar todas as divs que contêm informações de chat (role="listitem")
+            chat_content_divs = lista_conversas_block.find_elements(By.XPATH, './/div[@role="listitem"]')
+            print(f"Total de chats encontrados: {len(chat_content_divs)}")
+
+            # Iterar sobre as divs encontradas até o limite especificado
+            for i, chat_content_div in enumerate(chat_content_divs):
+                if i >= limit:
+                    break
+                try:
+                    print(f"Processando chat {i+1}...")
+                    # Extrair nome/telefone do contato
+                    try:
+                        # Tentar diferentes seletores para o nome
+                        name_selectors = [
+                            './/span[@title]',
+                            './/span[@dir="auto" and @title]',
+                            './/span[contains(@class, "x1iyjqo2") and @title]'
+                        ]
+                        name = None
+                        for selector in name_selectors:
+                            try:
+                                name_element = chat_content_div.find_element(By.XPATH, selector)
+                                name = name_element.get_attribute('title')
+                                if name:
+                                    print(f"Nome encontrado: {name}")
+                                    break
+                            except NoSuchElementException:
+                                continue
+                        if not name:
+                            name = "Contato sem nome"
+                            print("Nome não encontrado")
+                    except Exception as e:
+                        name = "Contato sem nome"
+                        print(f"Erro ao extrair nome: {e}")
+
+                    # Extrair última mensagem
+                    try:
+                        message_selectors = [
+                            './/span[@class="x78zum5 x1cy8zhl"]//span[@dir="ltr"]',
+                            './/span[@class="x78zum5 x1cy8zhl"]//span[@dir="auto"]',
+                            './/span[contains(@class, "x1cy8zhl")]//span[@dir="ltr"]',
+                            './/span[contains(@class, "x1cy8zhl")]//span[@dir="auto"]'
+                        ]
+                        last_message = None
+                        for selector in message_selectors:
+                            try:
+                                message_element = chat_content_div.find_element(By.XPATH, selector)
+                                last_message = message_element.text.strip()
+                                if last_message:
+                                    print(f"Mensagem encontrada: {last_message[:50]}...")
+                                    break
+                            except NoSuchElementException:
+                                continue
+                        if not last_message:
+                            last_message = "Sem mensagem"
+                            print("Mensagem não encontrado")
+                    except Exception as e:
+                        last_message = "Sem mensagem"
+                        print(f"Erro ao extrair última mensagem: {e}")
+
+                    # Extrair data/hora
+                    try:
+                        date_selectors = [
+                            './/div[contains(@class, "_ak8i")]',
+                            './/div[@class="_ak8i"]',
+                            './/div[contains(@class, "x1s688f")]'
+                        ]
+                        date_time = None
+                        for selector in date_selectors:
+                            try:
+                                date_element = chat_content_div.find_element(By.XPATH, selector)
+                                date_time = date_element.text.strip()
+                                if date_time:
+                                    print(f"Data encontrada: {date_time}")
+                                    break
+                            except NoSuchElementException:
+                                continue
+                        if not date_time:
+                            date_time = "Data não disponível"
+                            print("Data não encontrado")
+                    except Exception as e:
+                        date_time = "Data não disponível"
+                        print(f"Erro ao extrair data/hora: {e}")
+
+                    # Extrair foto do contato
+                    try:
+                        img_element = chat_content_div.find_element(By.XPATH, './/img[@src]')
+                        photo_url = img_element.get_attribute('src')
+                        print(f"Foto encontrada: {photo_url[:50]}...")
+                    except NoSuchElementException:
+                        photo_url = None
+                        print("Foto não encontrado")
+                    except Exception as e:
+                        photo_url = None
+                        print(f"Erro ao extrair foto: {e}")
+
+                    # Extrair número de mensagens não lidas - suporte para PT e EN
+                    try:
+                        unread_selectors = [
+                            './/span[contains(@aria-label, "unread message")]//span',  # EN
+                            './/span[contains(@aria-label, "mensagem") and contains(@aria-label, "lida")]//span',  # PT
+                            './/span[contains(@class, "x184q3qc")]',
+                            './/span[@class="x184q3qc"]'
+                        ]
+                        unread_count = "0"
+                        for selector in unread_selectors:
+                            try:
+                                unread_element = chat_content_div.find_element(By.XPATH, selector)
+                                unread_count = unread_element.text.strip()
+                                if unread_count:
+                                    print(f"Mensagens não lidas: {unread_count}")
+                                    break
+                            except NoSuchElementException:
+                                continue
+                    except Exception as e:
+                        unread_count = "0"
+                        print(f"Erro ao extrair mensagens não lidas: {e}")
+
+                    # Extrair telefone se disponível
+                    phone = None
+                    if name and name.startswith('+55'):
+                        phone = name
+                    elif name and any(char.isdigit() for char in name):
+                        phone = name
+
+                    result = {
+                        'name': name,
+                        'phone': phone,
+                        'lastMessage': last_message,
+                        'dateTime': date_time,
+                        'photo': photo_url,
+                        'unreadCount': unread_count
+                    }
+
+                    chatList.append(result)
+                    print(f"Chat {i+1} processado com sucesso")
+                except Exception as e:
+                    print(f"Erro ao processar chat {i}: {str(e)}")
+                    continue
+
+            print(f"Total de chats processados: {len(chatList)}")
+            return chatList
+
+        except Exception as e:
+            webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
+            time.sleep(1)
+            print(f"Erro geral: {e}")
+            return f"An error occurred: {e}"
+
+    def getAllChatsAlternative(self, navegador, limit=10):
+        """
+        Método alternativo para obter chats usando uma abordagem diferente
+        """
+        try:
+            webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
+            time.sleep(1)
+
+            chatList = []
+
+            # Aguarde até que a lista de conversas esteja presente - tentar múltiplos idiomas
+            lista_conversas_block = None
+            chat_list_selectors = [
+                '//div[@aria-label="Lista de conversas"]',  # Português
+                '//div[@aria-label="Chat list"]',  # Inglês
+                '//div[@aria-label="Conversation list"]',  # Inglês alternativo
+                '//div[@role="grid" and @aria-label]',  # Genérico
+                '//div[contains(@class, "x1y332i5") and @role="grid"]'  # Por classe
+            ]
+            
+            for selector in chat_list_selectors:
+                try:
+                    lista_conversas_block = WebDriverWait(navegador, 5).until(
+                        EC.presence_of_element_located((By.XPATH, selector))
+                    )
+                    print(f"Lista de conversas encontrada (método alternativo) com seletor: {selector}")
+                    break
+                except TimeoutException:
+                    print(f"Seletor não encontrado (método alternativo): {selector}")
+                    continue
+            
+            if not lista_conversas_block:
+                print("Nenhum seletor de lista de conversas funcionou (método alternativo)")
+                return chatList
+
+            # Tentar encontrar todos os elementos de chat usando diferentes seletores
+            chat_selectors = [
+                './/div[@role="listitem"]',
+                './/div[contains(@class, "x10l6tqk")]',
+                './/div[contains(@class, "xh8yej3")]'
+            ]
+
+            chat_content_divs = []
+            for selector in chat_selectors:
+                try:
+                    divs = lista_conversas_block.find_elements(By.XPATH, selector)
+                    if divs:
+                        chat_content_divs = divs
+                        print(f"Chats encontrados com seletor '{selector}': {len(divs)}")
+                        break
+                except Exception as e:
+                    print(f"Erro com seletor '{selector}': {e}")
+                    continue
+
+            if not chat_content_divs:
+                print("Nenhum chat encontrado com nenhum seletor")
+                return chatList
+
+            # Iterar sobre as divs encontradas até o limite especificado
+            for i, chat_content_div in enumerate(chat_content_divs):
+                if i >= limit:
+                    break
+                
+                try:
+                    print(f"Processando chat {i+1} (método alternativo)...")
+                    
+                    # Extrair nome/telefone do contato - tentar múltiplos seletores
+                    name = None
+                    name_selectors = [
+                        './/span[@title]',
+                        './/span[@dir="auto" and @title]',
+                        './/span[contains(@class, "x1iyjqo2")]',
+                        './/span[contains(@class, "xlyipyv")]'
+                    ]
+                    
+                    for selector in name_selectors:
+                        try:
+                            elements = chat_content_div.find_elements(By.XPATH, selector)
+                            for element in elements:
+                                title = element.get_attribute('title')
+                                if title and title.strip():
+                                    name = title.strip()
+                                    print(f"Nome encontrado: {name}")
+                                    break
+                            if name:
+                                break
+                        except Exception as e:
+                            continue
+                    
+                    if not name:
+                        name = "Contato sem nome"
+                        print("Nome não encontrado")
+                    
+                    # Extrair última mensagem - tentar múltiplos seletores
+                    last_message = None
+                    message_selectors = [
+                        './/span[@class="x78zum5 x1cy8zhl"]//span[@dir="ltr"]',
+                        './/span[@class="x78zum5 x1cy8zhl"]//span[@dir="auto"]',
+                        './/span[contains(@class, "x1cy8zhl")]//span',
+                        './/span[@dir="ltr"]',
+                        './/span[@dir="auto"]'
+                    ]
+                    
+                    for selector in message_selectors:
+                        try:
+                            elements = chat_content_div.find_elements(By.XPATH, selector)
+                            for element in elements:
+                                text = element.text.strip()
+                                if text and text != name:  # Evitar pegar o nome como mensagem
+                                    last_message = text
+                                    print(f"Mensagem encontrada: {last_message[:50]}...")
+                                    break
+                            if last_message:
+                                break
+                        except Exception as e:
+                            continue
+                    
+                    if not last_message:
+                        last_message = "Sem mensagem"
+                        print("Mensagem não encontrada")
+                    
+                    # Extrair data/hora
+                    date_time = None
+                    date_selectors = [
+                        './/div[contains(@class, "_ak8i")]',
+                        './/div[@class="_ak8i"]',
+                        './/div[contains(@class, "x1s688f")]',
+                        './/div[contains(@class, "false")]'
+                    ]
+                    
+                    for selector in date_selectors:
+                        try:
+                            elements = chat_content_div.find_elements(By.XPATH, selector)
+                            for element in elements:
+                                text = element.text.strip()
+                                if text and len(text) < 20:  # Datas são geralmente curtas
+                                    date_time = text
+                                    print(f"Data encontrada: {date_time}")
+                                    break
+                            if date_time:
+                                break
+                        except Exception as e:
+                            continue
+                    
+                    if not date_time:
+                        date_time = "Data não disponível"
+                        print("Data não encontrada")
+                    
+                    # Extrair foto do contato
+                    photo_url = None
+                    try:
+                        img_elements = chat_content_div.find_elements(By.XPATH, './/img[@src]')
+                        for img in img_elements:
+                            src = img.get_attribute('src')
+                            if src and 'whatsapp.net' in src:
+                                photo_url = src
+                                print(f"Foto encontrada: {photo_url[:50]}...")
+                                break
+                    except Exception as e:
+                        print("Foto não encontrada")
+                    
+                    # Extrair número de mensagens não lidas - suporte para PT e EN
+                    unread_count = "0"
+                    unread_selectors = [
+                        './/span[@aria-label*="mensagem não lida"]//span',  # PT
+                        './/span[@aria-label*="unread message"]//span',  # EN
+                        './/span[contains(@aria-label, "mensagem não lida")]//span',  # PT
+                        './/span[contains(@aria-label, "unread message")]//span',  # EN
+                        './/span[contains(@class, "x184q3qc")]',
+                        './/span[contains(@class, "x1rg5ohu")]'
+                    ]
+                    
+                    for selector in unread_selectors:
+                        try:
+                            elements = chat_content_div.find_elements(By.XPATH, selector)
+                            for element in elements:
+                                text = element.text.strip()
+                                if text and text.isdigit():
+                                    unread_count = text
+                                    print(f"Mensagens não lidas: {unread_count}")
+                                    break
+                            if unread_count != "0":
+                                break
+                        except Exception as e:
+                            continue
+                    
+                    # Extrair telefone se disponível
+                    phone = None
+                    if name and name.startswith('+55'):
+                        phone = name
+                    elif name and any(char.isdigit() for char in name):
+                        phone = name
+                    
+                    result = {
+                        'name': name,
+                        'phone': phone,
+                        'lastMessage': last_message,
+                        'dateTime': date_time,
+                        'photo': photo_url,
+                        'unreadCount': unread_count
+                    }
+
+                    chatList.append(result)
+                    print(f"Chat {i+1} processado com sucesso (método alternativo)")
+
+                except Exception as e:
+                    print(f"Erro ao processar chat {i} (método alternativo): {str(e)}")
+                    continue
+
+            print(f"Total de chats processados (método alternativo): {len(chatList)}")
+            return chatList
+
+        except Exception as e:
+            webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
+            time.sleep(1)
+            print(f"Erro geral (método alternativo): {e}")
+            return f"An error occurred: {e}"
 
     def sendToBucket(self, body, endPoint, method, timeout=12):
         try:

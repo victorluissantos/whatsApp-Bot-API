@@ -1,9 +1,10 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from typing import Optional
 from decouple import Config, RepositoryEnv
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -26,7 +27,29 @@ logging.basicConfig(level=logging.DEBUG)
 app = FastAPI(
     title="WhatsApp Bot API",
     description="API para automação do WhatsApp usando Selenium",
-    version="1.0.0"
+    version="1.0.0",
+    openapi_tags=[
+        {
+            "name": "Status",
+            "description": "Endpoints para verificar o status da conexão do WhatsApp"
+        },
+        {
+            "name": "Mensagens",
+            "description": "Endpoints para enviar mensagens via WhatsApp"
+        },
+        {
+            "name": "Chats",
+            "description": "Endpoints para gerenciar e obter informações dos chats"
+        },
+        {
+            "name": "Perfil",
+            "description": "Endpoints para obter informações do perfil do WhatsApp"
+        },
+        {
+            "name": "Sistema",
+            "description": "Endpoints para controle do sistema e screenshots"
+        }
+    ]
 )
 
 # Configuração de CORS
@@ -55,6 +78,20 @@ class SendMessageRequest(BaseModel):
     phone: str = Field(..., max_length=22, description="Número de telefone")
     message: str = Field(..., max_length=800, description="Texto da mensagem")
     unic_sent: bool = Field(False, description="Evita envio duplicado para o mesmo número")  # Novo nome
+
+class ChatInfo(BaseModel):
+    name: str = Field(..., description="Nome do contato")
+    phone: Optional[str] = Field(None, description="Número de telefone do contato")
+    lastMessage: str = Field(..., description="Última mensagem da conversa")
+    dateTime: str = Field(..., description="Data e hora da última mensagem")
+    photo: Optional[str] = Field(None, description="URL da foto do contato")
+    unreadCount: str = Field(..., description="Número de mensagens não lidas")
+
+class GetChatsResponse(BaseModel):
+    success: bool = Field(..., description="Indica se a operação foi bem-sucedida")
+    chats: list[ChatInfo] = Field(..., description="Lista de chats")
+    total: int = Field(..., description="Total de chats retornados")
+    limit: int = Field(..., description="Limite usado na consulta")
 
 def iniciar_selenium():
     global navegador
@@ -108,7 +145,7 @@ def obter_navegador():
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-@app.get("/status")
+@app.get("/status", tags=["Status"])
 async def get_status():
     navegador_local = obter_navegador()
     whats = Whats.Run()
@@ -124,7 +161,7 @@ async def get_status():
         except Exception as e:
             return {"connected": False, "qrCode": None, "error": f"QR code não encontrado: {str(e)}"}
 
-@app.get("/profile")
+@app.get("/profile", tags=["Perfil"])
 async def get_profile():
     navegador_local = obter_navegador()
     whats = Whats.Run()
@@ -139,7 +176,7 @@ async def get_profile():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao obter perfil: {str(e)}")
 
-@app.get("/screenshot")
+@app.get("/screenshot", tags=["Sistema"])
 async def get_screenshot():
     navegador_local = obter_navegador()
     whats = Whats.Run()
@@ -161,7 +198,7 @@ async def get_screenshot():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao capturar screenshot: {str(e)}")
 
-@app.post("/sendMessage")
+@app.post("/sendMessage", tags=["Mensagens"])
 async def send_message(request: SendMessageRequest):
     navegador_local = obter_navegador()
     whats = Whats.Run()
@@ -179,7 +216,7 @@ async def send_message(request: SendMessageRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
-@app.get("/sendMessage")
+@app.get("/sendMessage", tags=["Mensagens"])
 async def send_message_get(phone: str, message: str, unic_sent: bool = False):
     if not phone or not message or len(phone) > 22 or len(message) > 800:
         raise HTTPException(status_code=400, detail="Parâmetros inválidos")
@@ -199,7 +236,59 @@ async def send_message_get(phone: str, message: str, unic_sent: bool = False):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
-@app.post("/reset")
+@app.get("/getChats", tags=["Chats"], response_model=GetChatsResponse)
+async def get_chats(limit: int = Query(10, ge=1, le=50, description="Número de chats a retornar (1-50)")):
+    """
+    Obtém a lista de chats do WhatsApp Web.
+
+    Este endpoint retorna uma lista dos chats mais recentes do WhatsApp Web,
+    incluindo informações como nome do contato, telefone, última mensagem,
+    data/hora, foto do perfil e número de mensagens não lidas.
+
+    Args:
+        limit (int): O número máximo de chats a serem retornados (entre 1 e 50).
+
+    Returns:
+        GetChatsResponse: Um objeto contendo a lista de chats, total e limite usado.
+
+    Raises:
+        HTTPException: Se o WhatsApp não estiver conectado ou ocorrer erro interno.
+    """
+    # Validação do parâmetro limit
+    if limit < 1 or limit > 50:
+        raise HTTPException(status_code=400, detail="O parâmetro 'limit' deve estar entre 1 e 50")
+    
+    navegador_local = obter_navegador()
+    whats = Whats.Run()
+    
+    if not whats.isLogado(navegador_local):
+        raise HTTPException(status_code=400, detail="WhatsApp não está conectado")
+    
+    try:
+        chats = Chats.Run()
+        
+        # Tentar primeiro o método original
+        print("Tentando método original...")
+        chat_list = chats.getAllChats(navegador_local, limit)
+        
+        # Se retornar lista vazia, tentar o método alternativo
+        if isinstance(chat_list, list) and len(chat_list) == 0:
+            print("Método original retornou lista vazia, tentando método alternativo...")
+            chat_list = chats.getAllChatsAlternative(navegador_local, limit)
+        
+        if isinstance(chat_list, str) and "error" in chat_list.lower():
+            raise HTTPException(status_code=500, detail=f"Erro ao obter chats: {chat_list}")
+        
+        return {
+            "success": True,
+            "chats": chat_list,
+            "total": len(chat_list),
+            "limit": limit
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
+@app.post("/reset", tags=["Sistema"])
 async def reset_whatsapp():
     navegador_local = obter_navegador()
     whats = Whats.Run()
