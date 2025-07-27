@@ -137,7 +137,7 @@ class WhatsAppBot:
 					inputField.send_keys(Keys.SHIFT, Keys.ENTER)  # Quebra de linha
 				inputField.send_keys(parte)
 			print(f"[DEPURACAO] Mensagem digitada completamente (com quebras de linha)")
-			time.sleep(0.2)
+			time.sleep(1)
 			inputField.send_keys(Keys.RETURN)
 			print(f"[DEPURACAO] Enter enviado")
 			print(f"[TEMPO] Após enviar mensagem: {time.time() - start:.2f}s")
