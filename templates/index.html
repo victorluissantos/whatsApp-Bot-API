@@ -76,6 +76,69 @@
             border: 2px solid #ddd;
             border-radius: 8px;
         }
+        
+        /* Estilos para o accordion */
+        .accordion {
+            margin: 20px 0;
+        }
+        
+        .accordion-header {
+            background: #25D366;
+            color: white;
+            padding: 15px 20px;
+            cursor: pointer;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background-color 0.3s ease;
+        }
+        
+        .accordion-header:hover {
+            background: #128C7E;
+        }
+        
+        .accordion-header h2 {
+            margin: 0;
+            color: white;
+            font-size: 16px;
+        }
+        
+        .accordion-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+            background: #f8f9fa;
+            border-radius: 0 0 8px 8px;
+        }
+        
+        .accordion-content.active {
+            max-height: 1000px;
+            padding: 20px;
+        }
+        
+        .accordion-icon {
+            transition: transform 0.3s ease;
+            font-size: 18px;
+        }
+        
+        .accordion-icon.rotated {
+            transform: rotate(180deg);
+        }
+        
+        /* Ajustes para o conteúdo do accordion */
+        .accordion-content p {
+            margin: 10px 0;
+        }
+        
+        .accordion-content ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        
+        .accordion-content button {
+            margin: 10px 5px 0 0;
+        }
     </style>
 </head>
 <body>
@@ -83,91 +146,117 @@
         <h1>🤖 WhatsApp Bot API</h1>
         <p style="text-align: center; color: #666;">API simplificada para automação do WhatsApp</p>
 
-        <div class="endpoint">
-            <h2>
-                <span class="method get">GET</span>
-                /status
-            </h2>
-            <p><strong>Descrição:</strong> Verifica se o WhatsApp está conectado. Se não estiver, retorna o QR Code para conexão.</p>
-            <p><strong>Resposta:</strong></p>
-            <ul>
-                <li><code>connected: true/false</code> - Status da conexão</li>
-                <li><code>qrCode: string</code> - QR Code em base64 (se não conectado)</li>
-                <li><code>error: string</code> - Mensagem de erro (se houver)</li>
-            </ul>
-            <button id="btnStatus" onclick="checkStatus()">Verificar Status</button>
-            <div id="statusResult" class="result" style="display: none;"></div>
-            <div id="qrCodeResult" class="qr-code" style="display: none;"></div>
+        <div class="accordion">
+            <div class="accordion-header" onclick="toggleAccordion(this)">
+                <h2>
+                    <span class="method get">GET</span>
+                    /status
+                </h2>
+                <span class="accordion-icon">▼</span>
+            </div>
+            <div class="accordion-content">
+                <p><strong>Descrição:</strong> Verifica se o WhatsApp está conectado. Se não estiver, retorna o QR Code para conexão.</p>
+                <p><strong>Resposta:</strong></p>
+                <ul>
+                    <li><code>connected: true/false</code> - Status da conexão</li>
+                    <li><code>qrCode: string</code> - QR Code em base64 (se não conectado)</li>
+                    <li><code>error: string</code> - Mensagem de erro (se houver)</li>
+                </ul>
+                <button id="btnStatus" onclick="checkStatus()">Verificar Status</button>
+                <div id="statusResult" class="result" style="display: none;"></div>
+                <div id="qrCodeResult" class="qr-code" style="display: none;"></div>
+            </div>
         </div>
 
-        <div class="endpoint">
-            <h2>
-                <span class="method post">POST</span>
-                /sendMessage
-            </h2>
-            <p><strong>Descrição:</strong> Envia uma mensagem de texto via WhatsApp.</p>
-            <p><strong>Parâmetros:</strong></p>
-            <ul>
-                <li><code>phone: string</code> - Número de telefone (máx. 22 caracteres)</li>
-                <li><code>message: string</code> - Texto da mensagem (máx. 800 caracteres)</li>
-            </ul>
-            <p><strong>Resposta:</strong></p>
-            <ul>
-                <li><code>success: boolean</code> - Se a mensagem foi enviada</li>
-                <li><code>phone: string</code> - Número do telefone</li>
-                <li><code>message: string</code> - Mensagem de status</li>
-            </ul>
-            <button id="btnSendMessage" onclick="sendMessage()">Enviar Mensagem</button>
-            <div id="sendMessageResult" class="result" style="display: none;"></div>
+        <div class="accordion">
+            <div class="accordion-header" onclick="toggleAccordion(this)">
+                <h2>
+                    <span class="method post">POST</span>
+                    /sendMessage
+                </h2>
+                <span class="accordion-icon">▼</span>
+            </div>
+            <div class="accordion-content">
+                <p><strong>Descrição:</strong> Envia uma mensagem de texto via WhatsApp.</p>
+                <p><strong>Parâmetros:</strong></p>
+                <ul>
+                    <li><code>phone: string</code> - Número de telefone (máx. 22 caracteres)</li>
+                    <li><code>message: string</code> - Texto da mensagem (máx. 800 caracteres)</li>
+                </ul>
+                <p><strong>Resposta:</strong></p>
+                <ul>
+                    <li><code>success: boolean</code> - Se a mensagem foi enviada</li>
+                    <li><code>phone: string</code> - Número do telefone</li>
+                    <li><code>message: string</code> - Mensagem de status</li>
+                </ul>
+                <button id="btnSendMessage" onclick="sendMessage()">Enviar Mensagem</button>
+                <div id="sendMessageResult" class="result" style="display: none;"></div>
+            </div>
         </div>
 
-        <div class="endpoint">
-            <h2>
-                <span class="method get">GET</span>
-                /sendMessage
-            </h2>
-            <p><strong>Descrição:</strong> Envia uma mensagem de texto via WhatsApp (método GET).</p>
-            <p><strong>Parâmetros:</strong></p>
-            <ul>
-                <li><code>phone: string</code> - Número de telefone (máx. 22 caracteres)</li>
-                <li><code>message: string</code> - Texto da mensagem (máx. 800 caracteres)</li>
-            </ul>
-            <button onclick="sendMessageGet()">Enviar Mensagem (GET)</button>
-            <div id="sendMessageGetResult" class="result" style="display: none;"></div>
+        <div class="accordion">
+            <div class="accordion-header" onclick="toggleAccordion(this)">
+                <h2>
+                    <span class="method get">GET</span>
+                    /sendMessage
+                </h2>
+                <span class="accordion-icon">▼</span>
+            </div>
+            <div class="accordion-content">
+                <p><strong>Descrição:</strong> Envia uma mensagem de texto via WhatsApp (método GET).</p>
+                <p><strong>Parâmetros:</strong></p>
+                <ul>
+                    <li><code>phone: string</code> - Número de telefone (máx. 22 caracteres)</li>
+                    <li><code>message: string</code> - Texto da mensagem (máx. 800 caracteres)</li>
+                </ul>
+                <button onclick="sendMessageGet()">Enviar Mensagem (GET)</button>
+                <div id="sendMessageGetResult" class="result" style="display: none;"></div>
+            </div>
         </div>
 
-        <div class="endpoint">
-            <h2>
-                <span class="method get">GET</span>
-                /profile
-            </h2>
-            <p><strong>Descrição:</strong> Obtém informações do perfil do WhatsApp conectado.</p>
-            <p><strong>Resposta:</strong></p>
-        <ul>
-                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
-                <li><code>profile: object</code> - Dados do perfil (nome, foto, etc.)</li>
-        </ul>
-            <button onclick="getProfile()">Obter Perfil</button>
-            <div id="profileResult" class="result" style="display: none;"></div>
+        <div class="accordion">
+            <div class="accordion-header" onclick="toggleAccordion(this)">
+                <h2>
+                    <span class="method get">GET</span>
+                    /profile
+                </h2>
+                <span class="accordion-icon">▼</span>
+            </div>
+            <div class="accordion-content">
+                <p><strong>Descrição:</strong> Obtém informações do perfil do WhatsApp conectado.</p>
+                <p><strong>Resposta:</strong></p>
+                <ul>
+                    <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                    <li><code>profile: object</code> - Dados do perfil (nome, foto, etc.)</li>
+                </ul>
+                <button onclick="getProfile()">Obter Perfil</button>
+                <div id="profileResult" class="result" style="display: none;"></div>
+            </div>
         </div>
 
-        <div class="endpoint">
-            <h2>
-                <span class="method get">GET</span>
-                /screenshot
-            </h2>
-            <p><strong>Descrição:</strong> Captura um screenshot completo da tela do WhatsApp Web.</p>
-            <p><strong>Resposta:</strong></p>
-            <ul>
-                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
-                <li><code>screenshot: string</code> - Screenshot em base64</li>
-                <li><code>path: string</code> - Caminho do arquivo salvo</li>
-            </ul>
-            <button onclick="getScreenshot()">Capturar Screenshot</button>
-            <div id="screenshotResult" class="result" style="display: none;"></div>
-            <div id="screenshotImage" class="qr-code" style="display: none;"></div>
+        <div class="accordion">
+            <div class="accordion-header" onclick="toggleAccordion(this)">
+                <h2>
+                    <span class="method get">GET</span>
+                    /screenshot
+                </h2>
+                <span class="accordion-icon">▼</span>
+            </div>
+            <div class="accordion-content">
+                <p><strong>Descrição:</strong> Captura um screenshot completo da tela do WhatsApp Web.</p>
+                <p><strong>Resposta:</strong></p>
+                <ul>
+                    <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                    <li><code>screenshot: string</code> - Screenshot em base64</li>
+                    <li><code>path: string</code> - Caminho do arquivo salvo</li>
+                </ul>
+                <button onclick="getScreenshot()">Capturar Screenshot</button>
+                <div id="screenshotResult" class="result" style="display: none;"></div>
+                <div id="screenshotImage" class="qr-code" style="display: none;"></div>
+            </div>
         </div>
 
+<<<<<<< Updated upstream
         <div class="endpoint">
             <h2>
                 <span class="method post">POST</span>
@@ -181,6 +270,79 @@
             </ul>
             <button id="btnReset" onclick="resetWhatsapp()">Resetar WhatsApp (Ctrl+Shift+R)</button>
             <div id="resetResult" class="result" style="display:none;"></div>
+=======
+        <div class="accordion">
+            <div class="accordion-header" onclick="toggleAccordion(this)">
+                <h2>
+                    <span class="method get">GET</span>
+                    /getChats
+                </h2>
+                <span class="accordion-icon">▼</span>
+            </div>
+            <div class="accordion-content">
+                <p><strong>Descrição:</strong> Obtém a lista de conversas do WhatsApp com informações detalhadas.</p>
+                <p><strong>Parâmetros:</strong></p>
+                <ul>
+                    <li><code>limit: int</code> - Número de chats a retornar (1-50, padrão: 10)</li>
+                </ul>
+                <p><strong>Resposta:</strong></p>
+                <ul>
+                    <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                    <li><code>chats: array</code> - Lista de chats com nome, telefone, última mensagem, data/hora, foto e mensagens não lidas</li>
+                    <li><code>total: int</code> - Total de chats retornados</li>
+                    <li><code>limit: int</code> - Limite usado na consulta</li>
+                </ul>
+                <button onclick="getChats()">Obter Chats</button>
+                <div id="getChatsResult" class="result" style="display: none;"></div>
+            </div>
+        </div>
+
+        <div class="accordion">
+            <div class="accordion-header" onclick="toggleAccordion(this)">
+                <h2>
+                    <span class="method get">GET</span>
+                    /getMessage
+                </h2>
+                <span class="accordion-icon">▼</span>
+            </div>
+            <div class="accordion-content">
+                <p><strong>Descrição:</strong> Obtém as mensagens de um chat específico pelo número de telefone.</p>
+                <p><strong>Parâmetros:</strong></p>
+                <ul>
+                    <li><code>phone: string</code> - Número de telefone do contato (máx. 22 caracteres)</li>
+                </ul>
+                <p><strong>Resposta:</strong></p>
+                <ul>
+                    <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                    <li><code>contact_name: string</code> - Nome do contato</li>
+                    <li><code>phone: string</code> - Número de telefone</li>
+                    <li><code>messages: array</code> - Lista de mensagens com texto, data/hora e origem (enviada/recebida)</li>
+                    <li><code>total_messages: int</code> - Total de mensagens retornadas</li>
+                </ul>
+                <button onclick="getMessage()">Obter Mensagens</button>
+                <div id="getMessageResult" class="result" style="display: none;"></div>
+            </div>
+        </div>
+
+        <div class="accordion">
+            <div class="accordion-header" onclick="toggleAccordion(this)">
+                <h2>
+                    <span class="method post">POST</span>
+                    /reset
+                </h2>
+                <span class="accordion-icon">▼</span>
+            </div>
+            <div class="accordion-content">
+                <p><strong>Descrição:</strong> Recarrega completamente a tela do WhatsApp Web (simula Ctrl+Shift+R).</p>
+                <p><strong>Resposta:</strong></p>
+                <ul>
+                    <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                    <li><code>message: string</code> - Mensagem de status</li>
+                </ul>
+                <button id="btnReset" onclick="resetWhatsapp()">Resetar WhatsApp (Ctrl+Shift+R)</button>
+                <div id="resetResult" class="result" style="display:none;"></div>
+            </div>
+>>>>>>> Stashed changes
         </div>
 
         <div style="text-align: center; margin-top: 40px; color: #666;">
@@ -190,6 +352,27 @@
     </div>
 
     <script>
+// Função para controlar o accordion
+function toggleAccordion(header) {
+    const content = header.nextElementSibling;
+    const icon = header.querySelector('.accordion-icon');
+    
+    // Fecha todos os outros accordions
+    const allContents = document.querySelectorAll('.accordion-content');
+    const allIcons = document.querySelectorAll('.accordion-icon');
+    
+    allContents.forEach((item, index) => {
+        if (item !== content) {
+            item.classList.remove('active');
+            allIcons[index].classList.remove('rotated');
+        }
+    });
+    
+    // Toggle do accordion atual
+    content.classList.toggle('active');
+    icon.classList.toggle('rotated');
+}
+
 function checkStatus() {
     const btn = document.getElementById('btnStatus');
     btn.disabled = true;
@@ -350,6 +533,65 @@ function checkStatus() {
                 });
         }
 
+<<<<<<< Updated upstream
+=======
+        function getChats() {
+            const btn = document.querySelector('button[onclick="getChats()"]');
+            btn.disabled = true;
+            btn.textContent = 'Aguarde...';
+
+            const limit = prompt('Digite o número de chats a retornar (1-50, padrão: 10):');
+            const url = `/getChats?limit=${limit || 10}`;
+
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    const resultDiv = document.getElementById('getChatsResult');
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = JSON.stringify(data, null, 2);
+                })
+                .catch(error => {
+                    document.getElementById('getChatsResult').style.display = 'block';
+                    document.getElementById('getChatsResult').innerHTML = `Erro: ${error}`;
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                    btn.textContent = 'Obter Chats';
+                });
+        }
+
+        function getMessage() {
+            const btn = document.querySelector('button[onclick="getMessage()"]');
+            btn.disabled = true;
+            btn.textContent = 'Aguarde...';
+
+            const phone = prompt('Digite o número de telefone do contato:');
+            if (!phone) {
+                btn.disabled = false;
+                btn.textContent = 'Obter Mensagens';
+                return;
+            }
+
+            const url = `/getMessage?phone=${encodeURIComponent(phone)}`;
+
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    const resultDiv = document.getElementById('getMessageResult');
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = JSON.stringify(data, null, 2);
+                })
+                .catch(error => {
+                    document.getElementById('getMessageResult').style.display = 'block';
+                    document.getElementById('getMessageResult').innerHTML = `Erro: ${error}`;
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                    btn.textContent = 'Obter Mensagens';
+                });
+        }
+
+>>>>>>> Stashed changes
         function resetWhatsapp() {
             const btn = document.getElementById('btnReset');
             btn.disabled = true;
