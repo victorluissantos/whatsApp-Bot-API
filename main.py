@@ -18,7 +18,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 
-from datasource import Mongo, AutoBoot, Chats, Whats
+from datasource import Mongo, AutoBoot, Chats, Whats, Messages
 
 # Configuração de logging
 logging.basicConfig(level=logging.DEBUG)
@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.DEBUG)
 app = FastAPI(
     title="WhatsApp Bot API",
     description="API para automação do WhatsApp usando Selenium",
-    version="1.0.0",
+    version="1.0.2",
     openapi_tags=[
         {
             "name": "Status",
@@ -35,7 +35,7 @@ app = FastAPI(
         },
         {
             "name": "Mensagens",
-            "description": "Endpoints para enviar mensagens via WhatsApp"
+            "description": "Endpoints para enviar e obter mensagens via WhatsApp"
         },
         {
             "name": "Chats",
@@ -92,6 +92,18 @@ class GetChatsResponse(BaseModel):
     chats: list[ChatInfo] = Field(..., description="Lista de chats")
     total: int = Field(..., description="Total de chats retornados")
     limit: int = Field(..., description="Limite usado na consulta")
+
+class MessageInfo(BaseModel):
+    message: str = Field(..., description="Texto da mensagem")
+    data: str = Field(..., description="Data/hora da mensagem")
+    origem: str = Field(..., description="Origem da mensagem (enviada/recebida)")
+
+class GetMessagesResponse(BaseModel):
+    success: bool = Field(..., description="Indica se a operação foi bem-sucedida")
+    contact_name: str = Field(..., description="Nome do contato")
+    phone: str = Field(..., description="Número de telefone")
+    messages: list[MessageInfo] = Field(..., description="Lista de mensagens")
+    total_messages: int = Field(..., description="Total de mensagens retornadas")
 
 def iniciar_selenium():
     global navegador
@@ -287,6 +299,47 @@ async def get_chats(limit: int = Query(10, ge=1, le=50, description="Número de 
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
+@app.get("/getMessage", tags=["Mensagens"], response_model=GetMessagesResponse)
+async def get_message(phone: str = Query(..., description="Número de telefone do contato")):
+    """
+    Obtém as mensagens de um chat específico pelo número de telefone.
+
+    Este endpoint retorna as mensagens de um chat específico do WhatsApp Web,
+    incluindo informações como texto da mensagem, tipo (enviada/recebida),
+    horário e informações do contato.
+
+    Args:
+        phone (str): O número de telefone do contato.
+
+    Returns:
+        GetMessagesResponse: Um objeto contendo as mensagens do chat.
+
+    Raises:
+        HTTPException: Se o WhatsApp não estiver conectado ou ocorrer erro interno.
+    """
+    # Validação do parâmetro phone
+    if not phone or len(phone) > 22:
+        raise HTTPException(status_code=400, detail="O parâmetro 'phone' é obrigatório e deve ter no máximo 22 caracteres")
+    
+    navegador_local = obter_navegador()
+    whats = Whats.Run()
+    
+    if not whats.isLogado(navegador_local):
+        raise HTTPException(status_code=400, detail="WhatsApp não está conectado")
+    
+    try:
+        messages = Messages.Run()
+        result = messages.getMessages(navegador_local, phone)
+        
+        if result.get("success"):
+            return result
+        else:
+            raise HTTPException(status_code=404, detail=result.get("error", "Erro ao obter mensagens"))
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
 
 @app.post("/reset", tags=["Sistema"])
 async def reset_whatsapp():
