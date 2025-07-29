@@ -1,9 +1,10 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from typing import Optional
 from decouple import Config, RepositoryEnv
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -26,10 +27,7 @@ logging.basicConfig(level=logging.DEBUG)
 app = FastAPI(
     title="WhatsApp Bot API",
     description="API para automação do WhatsApp usando Selenium",
-<<<<<<< Updated upstream
-    version="1.0.0"
-=======
-    version="1.0.0",
+    version="1.0.2",
     openapi_tags=[
         {
             "name": "Status",
@@ -52,7 +50,6 @@ app = FastAPI(
             "description": "Endpoints para controle do sistema e screenshots"
         }
     ]
->>>>>>> Stashed changes
 )
 
 # Configuração de CORS
@@ -82,8 +79,6 @@ class SendMessageRequest(BaseModel):
     message: str = Field(..., max_length=800, description="Texto da mensagem")
     unic_sent: bool = Field(False, description="Evita envio duplicado para o mesmo número")  # Novo nome
 
-<<<<<<< Updated upstream
-=======
 class ChatInfo(BaseModel):
     name: str = Field(..., description="Nome do contato")
     phone: Optional[str] = Field(None, description="Número de telefone do contato")
@@ -110,7 +105,6 @@ class GetMessagesResponse(BaseModel):
     messages: list[MessageInfo] = Field(..., description="Lista de mensagens")
     total_messages: int = Field(..., description="Total de mensagens retornadas")
 
->>>>>>> Stashed changes
 def iniciar_selenium():
     global navegador
     if navegador:
@@ -163,7 +157,7 @@ def obter_navegador():
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-@app.get("/status")
+@app.get("/status", tags=["Status"])
 async def get_status():
     navegador_local = obter_navegador()
     whats = Whats.Run()
@@ -179,7 +173,7 @@ async def get_status():
         except Exception as e:
             return {"connected": False, "qrCode": None, "error": f"QR code não encontrado: {str(e)}"}
 
-@app.get("/profile")
+@app.get("/profile", tags=["Perfil"])
 async def get_profile():
     navegador_local = obter_navegador()
     whats = Whats.Run()
@@ -194,7 +188,7 @@ async def get_profile():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao obter perfil: {str(e)}")
 
-@app.get("/screenshot")
+@app.get("/screenshot", tags=["Sistema"])
 async def get_screenshot():
     navegador_local = obter_navegador()
     whats = Whats.Run()
@@ -216,7 +210,7 @@ async def get_screenshot():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao capturar screenshot: {str(e)}")
 
-@app.post("/sendMessage")
+@app.post("/sendMessage", tags=["Mensagens"])
 async def send_message(request: SendMessageRequest):
     navegador_local = obter_navegador()
     whats = Whats.Run()
@@ -234,7 +228,7 @@ async def send_message(request: SendMessageRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
-@app.get("/sendMessage")
+@app.get("/sendMessage", tags=["Mensagens"])
 async def send_message_get(phone: str, message: str, unic_sent: bool = False):
     if not phone or not message or len(phone) > 22 or len(message) > 800:
         raise HTTPException(status_code=400, detail="Parâmetros inválidos")
@@ -254,9 +248,6 @@ async def send_message_get(phone: str, message: str, unic_sent: bool = False):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
-<<<<<<< Updated upstream
-@app.post("/reset")
-=======
 @app.get("/getChats", tags=["Chats"], response_model=GetChatsResponse)
 async def get_chats(limit: int = Query(10, ge=1, le=50, description="Número de chats a retornar (1-50)")):
     """
@@ -349,8 +340,8 @@ async def get_message(phone: str = Query(..., description="Número de telefone d
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
+
 @app.post("/reset", tags=["Sistema"])
->>>>>>> Stashed changes
 async def reset_whatsapp():
     navegador_local = obter_navegador()
     whats = Whats.Run()

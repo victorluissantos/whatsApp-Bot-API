@@ -256,21 +256,6 @@
             </div>
         </div>
 
-<<<<<<< Updated upstream
-        <div class="endpoint">
-            <h2>
-                <span class="method post">POST</span>
-                /reset
-            </h2>
-            <p><strong>Descrição:</strong> Recarrega completamente a tela do WhatsApp Web (simula Ctrl+Shift+R).</p>
-            <p><strong>Resposta:</strong></p>
-            <ul>
-                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
-                <li><code>message: string</code> - Mensagem de status</li>
-            </ul>
-            <button id="btnReset" onclick="resetWhatsapp()">Resetar WhatsApp (Ctrl+Shift+R)</button>
-            <div id="resetResult" class="result" style="display:none;"></div>
-=======
         <div class="accordion">
             <div class="accordion-header" onclick="toggleAccordion(this)">
                 <h2>
@@ -342,7 +327,6 @@
                 <button id="btnReset" onclick="resetWhatsapp()">Resetar WhatsApp (Ctrl+Shift+R)</button>
                 <div id="resetResult" class="result" style="display:none;"></div>
             </div>
->>>>>>> Stashed changes
         </div>
 
         <div style="text-align: center; margin-top: 40px; color: #666;">
@@ -533,8 +517,6 @@ function checkStatus() {
                 });
         }
 
-<<<<<<< Updated upstream
-=======
         function getChats() {
             const btn = document.querySelector('button[onclick="getChats()"]');
             btn.disabled = true;
@@ -591,7 +573,6 @@ function checkStatus() {
                 });
         }
 
->>>>>>> Stashed changes
         function resetWhatsapp() {
             const btn = document.getElementById('btnReset');
             btn.disabled = true;
