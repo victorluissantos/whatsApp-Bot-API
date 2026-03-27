@@ -7,14 +7,22 @@ import time
 class MongoDBConnector:
     def __init__(self, env):
         self.env = env
-        
-        # Pegando variáveis do .env
-        mongo_user = env("MONGO_USER")
-        mongo_password = env("MONGO_PASSWORD")
-        mongo_host = env("MONGO_NAME")  # Nome do container no Docker
-        mongo_port = env("MONGO_PORT")
-        mongo_db = env("MONGO_DB")
-        mongo_collection = env("MONGO_COLLECTION")
+
+        def get_env(*keys):
+            for key in keys:
+                try:
+                    return env(key)
+                except Exception:
+                    continue
+            raise ValueError(f"Nenhuma variável encontrada entre: {', '.join(keys)}")
+
+        # Aceita tanto variáveis no padrão novo (MONGO_*) quanto no legado (MONGO*)
+        mongo_user = get_env("MONGO_USER", "MONGOUSER")
+        mongo_password = get_env("MONGO_PASSWORD", "MONGOPASSWORD")
+        mongo_host = get_env("MONGO_NAME", "MONGONAME")  # Nome do container no Docker
+        mongo_port = get_env("MONGO_PORT", "MONGOPORT")
+        mongo_db = get_env("MONGO_DB", "MONGODB")
+        mongo_collection = get_env("MONGO_COLLECTION", "MONGOCOLLECTION")
 
         # String de conexão com autenticação - usando authSource=admin
         mongo_uri = f"mongodb://{mongo_user}:{mongo_password}@{mongo_host}:{mongo_port}/{mongo_db}?authSource=admin"

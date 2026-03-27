@@ -66,6 +66,34 @@ pip install -r IaC/flask/requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
+## Debug Visual (VNC)
+
+- Por padrão, o Selenium roda oculto (`headless`) no `main.py` com:
+  - `WINDOW_SHOW_DEBUG = False`
+- Para mostrar a janela do navegador durante o debug, altere para:
+  - `WINDOW_SHOW_DEBUG = True`
+- Após alterar, recrie e reinicie os containers:
+
+```bash
+docker compose down
+docker compose up -d --build
+```
+
+- Para abrir a janela do container via VNC:
+
+```bash
+gvncviewer 127.0.0.1:5914
+```
+
+- Se estiver usando TigerVNC:
+
+```bash
+vncviewer 127.0.0.1:5914
+```
+
+- Quando o cliente VNC solicitar a senha, use:
+  - `V0oiye3R`
+
 ## Estrutura do Projeto
 
 ```

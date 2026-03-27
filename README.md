@@ -66,6 +66,34 @@ pip install -r IaC/flask/requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
+## Visual Debug (VNC)
+
+- By default, Selenium runs hidden (`headless`) in `main.py` with:
+  - `WINDOW_SHOW_DEBUG = False`
+- To show the browser window for debugging, change it to:
+  - `WINDOW_SHOW_DEBUG = True`
+- Rebuild and restart containers after changing this value:
+
+```bash
+docker compose down
+docker compose up -d --build
+```
+
+- Open the container desktop via VNC:
+
+```bash
+gvncviewer 127.0.0.1:5914
+```
+
+- If you use TigerVNC:
+
+```bash
+vncviewer 127.0.0.1:5914
+```
+
+- When the VNC client asks for a password, use:
+  - `V0oiye3R`
+
 ## Project Structure
 
 ```
@@ -84,11 +112,11 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 Configure the following variables in the `.env` file:
 
-- `MONGO_USER`: MongoDB username
-- `MONGO_PASSWORD`: MongoDB password
-- `MONGO_DB`: Database name
-- `FASTAPI_PORT`: Application port (default: 8000)
-- `FASTAPI_NAME`: Container name (default: fastapi-app)
+- `MONGOUSER`: MongoDB username
+- `MONGOPASSWORD`: MongoDB password
+- `MONGODB`: Database name
+- `FASTAPIPORT`: Application port (default: 8000)
+- `FASTAPINAME`: Container name (default: fastapi-app)
 
 ### Initial Setup
 

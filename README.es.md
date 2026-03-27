@@ -66,6 +66,34 @@ pip install -r IaC/flask/requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
+## Depuracion Visual (VNC)
+
+- Por defecto, Selenium se ejecuta oculto (`headless`) en `main.py` con:
+  - `WINDOW_SHOW_DEBUG = False`
+- Para mostrar la ventana del navegador durante la depuracion, cambialo a:
+  - `WINDOW_SHOW_DEBUG = True`
+- Despues del cambio, recrea y reinicia los contenedores:
+
+```bash
+docker compose down
+docker compose up -d --build
+```
+
+- Para abrir la ventana del contenedor por VNC:
+
+```bash
+gvncviewer 127.0.0.1:5914
+```
+
+- Si usas TigerVNC:
+
+```bash
+vncviewer 127.0.0.1:5914
+```
+
+- Cuando el cliente VNC solicite la contrasena, use:
+  - `V0oiye3R`
+
 ## Estructura del Proyecto
 
 ```

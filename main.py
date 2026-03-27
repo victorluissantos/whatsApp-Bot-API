@@ -72,6 +72,8 @@ mgd = Mongo.MongoDBConnector(env)
 # Variáveis globais
 navegador = None
 selenium_thread = None
+# Por padrão mantém o Chrome oculto (headless). Defina True para debug visual via VNC.
+WINDOW_SHOW_DEBUG = False # set to True for debug visual via VNC
 
 # Modelos Pydantic para validação
 class SendMessageRequest(BaseModel):
@@ -125,7 +127,10 @@ def iniciar_selenium():
     chrome_options.add_argument('--disable-dev-shm-usage')
     chrome_options.add_argument(f'--user-data-dir={user_data_dir}')
     chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--headless')  # Executar em modo headless
+    if not WINDOW_SHOW_DEBUG:
+        chrome_options.add_argument('--headless')
+    else:
+        chrome_options.add_argument('--window-size=1366,768')
     chrome_options.add_argument('--disable-extensions')
     chrome_options.add_argument('--disable-plugins')
     chrome_options.add_argument('--disable-images')

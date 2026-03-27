@@ -4,15 +4,16 @@ services:
             context: .
             dockerfile: IaC/flask/Dockerfile
         ports:
-            - "${FASTAPI_PORT:-8000:8000}"
-        container_name: "${FASTAPI_NAME:-fastapi-app}"
+            - "${FASTAPIPORT:-8000:8000}"
+            - "5914:5914"
+        container_name: "${FASTAPINAME:-fastapi-app}"
         volumes:
             - .:/code
         restart: always
         networks:
             - kallaf
         environment:
-            - MONGO_URI=mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongo:27017/${MONGO_DB}
+            - MONGO_URI=mongodb://${MONGOUSER}:${MONGOPASSWORD}@mongo:27017/${MONGODB}
         env_file:
             - .env
         depends_on:
@@ -20,13 +21,13 @@ services:
 
     mongo:
         image: mongo:4.4
-        container_name: "${MONGO_NAME}"
+        container_name: "${MONGONAME}"
         restart: always
         ports:
             - "27017:27017"
         environment:
-            - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
-            - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
+            - MONGO_INITDB_ROOT_USERNAME=${MONGOUSER}
+            - MONGO_INITDB_ROOT_PASSWORD=${MONGOPASSWORD}
         volumes:
             - mongo_data:/data/db
         networks:

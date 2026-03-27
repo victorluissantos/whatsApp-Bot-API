@@ -20,9 +20,12 @@ class WhatsAppBot:
 
 
 	def syncSendText(self, telefone, message, unic_sent=False):
+		print("[SYNC_SENDTEXT_V2] Iniciando fluxo por URL")
 
-		if not telefone.startswith("+55"):
-			telefone = "+55" + telefone
+		telefone = ''.join(filter(str.isdigit, str(telefone)))
+		if not telefone.startswith("55"):
+			telefone = "55" + telefone
+		telefone = "+" + telefone
 		status = "Enviado"
 
 		print(f"🔍 Iniciando envio para: {telefone}")
@@ -44,102 +47,81 @@ class WhatsAppBot:
 			start = time.time()
 			print(f"[TEMPO] Início do envio: {start}")
 
-			print("🔄 Pressionando ESC duas vezes...")
-			webdriver.ActionChains(self.navegador).send_keys(Keys.ESCAPE).perform()
-			time.sleep(0.2)  # Reduzido de 0.5s
-			webdriver.ActionChains(self.navegador).send_keys(Keys.ESCAPE).perform()
-			time.sleep(0.2)  # Reduzido de 0.5s
-			print(f"[TEMPO] Após ESC: {time.time() - start:.2f}s")
+			# Fluxo resiliente: abre direto o chat por URL para evitar quebra de seletor
+			link = f"https://web.whatsapp.com/send?phone={telefone.replace('+', '')}"
+			self.navegador.get(link)
+			print(f"[DEPURACAO] URL aberta: {link}")
 
-			print("🔄 Usando Ctrl+N para nova conversa...")
-			actions = ActionChains(self.navegador)
-			actions.key_down(Keys.CONTROL).key_down(Keys.ALT).send_keys('n').key_up(Keys.ALT).key_up(Keys.CONTROL).perform()
-			time.sleep(1)  # Reduzido de 2s
-			print(f"[TEMPO] Após Ctrl+Alt+N: {time.time() - start:.2f}s")
+			WebDriverWait(self.navegador, 20).until(
+				EC.presence_of_element_located((By.ID, "app"))
+			)
 
-			print("🔍 Procurando campo de busca...")
-			# Campo de busca de contato/conversa - seletores otimizados
-			campo_busca = None
-			seletores_busca = [
-				'div[contenteditable="true"][data-tab="3"]',  # Mais comum primeiro
-				'div[contenteditable="true"][aria-label="Pesquisar nome ou número"]',
-				'div[contenteditable="true"][aria-label="Search or start new chat"]',
-				'div[contenteditable="true"][data-tab="1"]',
-				'div[contenteditable="true"][role="textbox"]',
-				'div[contenteditable="true"]'
+			# Detecta número inválido (pt/en) de forma explícita
+			invalid_xpaths = [
+				'//*[contains(text(), "número de telefone compartilhado pela URL é inválido")]',
+				'//*[contains(text(), "Phone number shared via url is invalid")]',
+				'//*[contains(text(), "phone number shared via url is invalid")]',
+				'//*[contains(text(), "não está no WhatsApp")]',
+				'//*[contains(text(), "isn\'t on WhatsApp")]'
 			]
-			for i, seletor in enumerate(seletores_busca):
+			for invalid_xpath in invalid_xpaths:
 				try:
-					print(f"🔍 Tentando seletor {i+1}: {seletor}")
-					campo_busca = WebDriverWait(self.navegador, 2).until(  # Reduzido de 3s
-						EC.presence_of_element_located((By.CSS_SELECTOR, seletor))
+					WebDriverWait(self.navegador, 2).until(
+						EC.presence_of_element_located((By.XPATH, invalid_xpath))
 					)
-					print(f"✅ Campo de busca encontrado com seletor {i+1}!")
+					print("[DEPURACAO] Número marcado como inválido pelo WhatsApp Web")
+					try:
+						self.navegador.save_screenshot("static/tmp/send_invalid.png")
+					except Exception:
+						pass
+					status = "Inválido!"
 					break
-				except (NoSuchElementException, TimeoutException) as e:
-					print(f"❌ Seletor {i+1} falhou: {e}")
+				except TimeoutException:
 					continue
-			if not campo_busca:
-				print("❌ Nenhum seletor funcionou para o campo de busca!")
-				raise Exception("Campo de busca não encontrado com nenhum seletor")
-			print(f"[TEMPO] Após encontrar campo de busca: {time.time() - start:.2f}s")
 
-			campo_busca.clear()
-			time.sleep(0.1)  # Reduzido de 0.2s
-			# Verificar se o telefone já tem +55, se não tiver, adicionar
-			if not telefone.startswith('+55'):
-				telefone = '+55'+telefone
-			campo_busca.send_keys(telefone)
-			print(f"[DEPURACAO] Telefone digitado: {telefone}")
-			time.sleep(1)  # Reduzido de 2s
-			
-			# Verificar se o contato foi encontrado antes de pressionar Enter
-			try:
-				# Aguardar até 3 segundos para o resultado da busca aparecer
-				resultado_busca = WebDriverWait(self.navegador, 3).until(  # Reduzido de 5s
-					EC.presence_of_element_located((By.CSS_SELECTOR, 'div[data-testid="cell-phone"], div[role="option"]'))
-				)
-				print(f"[DEPURACAO] Contato encontrado: {resultado_busca.text}")
-				time.sleep(0.5)  # Reduzido de 1s
-			except:
-				print(f"[DEPURACAO] Contato não encontrado, tentando mesmo assim...")
-			
-			campo_busca.send_keys(Keys.RETURN)
-			print(f"[DEPURACAO] Enter pressionado para abrir conversa")
-			time.sleep(1)  # Reduzido de 2s
+			if status != "Enviado":
+				return status
 
-			# 3. Preencher e enviar mensagem
+			# Aguarda campo de mensagem com seletores atuais + fallback
 			inputField = None
 			seletores_input = [
+				'div[contenteditable="true"][data-testid="conversation-compose-box-input"]',
+				'footer div[contenteditable="true"][role="textbox"]',
 				'div[contenteditable="true"][aria-label="Digite uma mensagem"]',
-				'div[contenteditable="true"][data-tab="10"]',
-				'div[contenteditable="true"][role="textbox"]',
-				'div[contenteditable="true"]'
+				'div[contenteditable="true"][aria-label="Type a message"]'
 			]
-			for i, seletor in enumerate(seletores_input):
+			for seletor in seletores_input:
 				try:
-					inputField = WebDriverWait(self.navegador, 3).until(  # Reduzido de 5s
+					inputField = WebDriverWait(self.navegador, 12).until(
 						EC.presence_of_element_located((By.CSS_SELECTOR, seletor))
 					)
+					print(f"[DEPURACAO] Campo de mensagem encontrado: {seletor}")
 					break
-				except (NoSuchElementException, TimeoutException):
+				except TimeoutException:
 					continue
+
 			if not inputField:
 				print("❌ Campo de mensagem não encontrado!")
+				try:
+					self.navegador.save_screenshot("static/tmp/send_input_not_found.png")
+				except Exception:
+					pass
 				return "Campo de mensagem não encontrado"
+
 			inputField.click()
-			inputField.clear()
-			time.sleep(0.1)  # Reduzido de 0.2s
+			time.sleep(0.2)
+			inputField.send_keys(Keys.CONTROL, "a")
+			inputField.send_keys(Keys.BACKSPACE)
 			print(f"[DEPURACAO] Iniciando digitação da mensagem: {message}")
-			# Enviar mensagem com suporte a quebras de linha
+
 			for i, parte in enumerate(message.split('\n')):
 				if i > 0:
-					inputField.send_keys(Keys.SHIFT, Keys.ENTER)  # Quebra de linha
+					inputField.send_keys(Keys.SHIFT, Keys.ENTER)
 				inputField.send_keys(parte)
-			print(f"[DEPURACAO] Mensagem digitada completamente (com quebras de linha)")
-			time.sleep(1)
+
+			time.sleep(0.3)
 			inputField.send_keys(Keys.RETURN)
-			print(f"[DEPURACAO] Enter enviado")
+			print(f"[DEPURACAO] Mensagem enviada")
 			print(f"[TEMPO] Após enviar mensagem: {time.time() - start:.2f}s")
 			# Captura screenshot após o envio
 			# try:
@@ -156,6 +138,10 @@ class WhatsAppBot:
 			import traceback
 			print(f"❌ Traceback completo:")
 			traceback.print_exc()
+			try:
+				self.navegador.save_screenshot("static/tmp/send_exception.png")
+			except Exception:
+				pass
 			status = "Inválido!"
 
 		# Volta para a home
