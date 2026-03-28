@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
 from decouple import Config, RepositoryEnv
 from selenium import webdriver
@@ -19,6 +19,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 
 from datasource import Mongo, AutoBoot, Chats, Whats, Messages
+from datasource import async_send_queue as async_queue
 
 # Configuração de logging
 logging.basicConfig(level=logging.DEBUG)
@@ -48,6 +49,10 @@ app = FastAPI(
         {
             "name": "Sistema",
             "description": "Endpoints para controle do sistema e screenshots"
+        },
+        {
+            "name": "Webhook",
+            "description": "Configuração de webhook para notificação após envio assíncrono"
         }
     ]
 )
@@ -73,7 +78,11 @@ mgd = Mongo.MongoDBConnector(env)
 navegador = None
 selenium_thread = None
 # Por padrão mantém o Chrome oculto (headless). Defina True para debug visual via VNC.
-WINDOW_SHOW_DEBUG = False # set to True for debug visual via VNC
+WINDOW_SHOW_DEBUG = True # set to True for debug visual via VNC
+
+# Um único envio por vez (síncrono ou worker da fila) para não concorrer no Selenium
+whatsapp_send_lock = threading.Lock()
+_queue_worker_stop = threading.Event()
 
 # Modelos Pydantic para validação
 class SendMessageRequest(BaseModel):
@@ -106,6 +115,50 @@ class GetMessagesResponse(BaseModel):
     phone: str = Field(..., description="Número de telefone")
     messages: list[MessageInfo] = Field(..., description="Lista de mensagens")
     total_messages: int = Field(..., description="Total de mensagens retornadas")
+
+
+class DeliveryWebhookRequest(BaseModel):
+    url: str = Field(..., max_length=2048, description="URL HTTPS (ou HTTP em dev) que receberá POST ao concluir envio da fila")
+
+
+class DeliveryWebhookResponse(BaseModel):
+    success: bool = Field(..., description="Operação bem-sucedida")
+    url: Optional[str] = Field(None, description="URL configurada (vazia se removida)")
+
+
+class SendMessageAsyncResponse(BaseModel):
+    success: bool = Field(..., description="Mensagem aceita na fila")
+    queued: bool = Field(True, description="Indica enfileiramento assíncrono")
+    job_id: str = Field(..., description="Identificador do trabalho na fila")
+    webhook_configured: bool = Field(..., description="Há webhook para notificar ao enviar")
+    webhook_config_missing: bool = Field(
+        ...,
+        description="True se não há webhook: envio ocorrerá na fila sem callback",
+    )
+    message: str = Field(..., description="Mensagem informativa para o cliente")
+
+
+class SendQueueJobItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    job_id: str = Field(..., description="Identificador do job")
+    phone: str = Field(..., description="Telefone de destino")
+    message: str = Field(..., description="Texto enfileirado")
+    unic_sent: bool = Field(False, description="Flag unic_sent no envio")
+    status: str = Field(..., description="pending | processing | sent | failed")
+    created_at: Optional[str] = Field(None, description="UTC ISO quando entrou na fila")
+    started_at: Optional[str] = Field(None, description="UTC ISO quando o worker começou")
+    processed_at: Optional[str] = Field(None, description="UTC ISO quando finalizou")
+    result: Optional[str] = Field(None, description="Resultado do envio (ex.: Enviado) ou erro")
+
+
+class SendQueueListResponse(BaseModel):
+    success: bool = Field(..., description="Consulta ok")
+    items: list[SendQueueJobItem] = Field(..., description="Jobs da página (mais recentes primeiro)")
+    total: int = Field(..., description="Total de documentos na fila")
+    page: int = Field(..., description="Página atual (1-based)")
+    page_size: int = Field(..., description="Itens por página")
+    total_pages: int = Field(..., description="Total de páginas")
 
 def iniciar_selenium():
     global navegador
@@ -157,6 +210,61 @@ def obter_navegador():
     while navegador is None:
         time.sleep(1)
     return navegador
+
+
+def _run_message_queue_worker():
+    """Máquina de estados simples: se o lock de envio está livre e há jobs pendentes, processa um."""
+    while not _queue_worker_stop.is_set():
+        time.sleep(0.35)
+        if not whatsapp_send_lock.acquire(blocking=False):
+            continue
+        try:
+            navegador_local = obter_navegador()
+            whats = Whats.Run()
+            if not whats.isLogado(navegador_local):
+                continue
+            job = async_queue.claim_next_pending_job(mgd)
+            if not job:
+                continue
+            job_id = job["job_id"]
+            phone = job["phone"]
+            message = job["message"]
+            unic_sent = bool(job.get("unic_sent", False))
+            try:
+                w = AutoBoot.WhatsAppBot(navegador_local, mgd)
+                result = w.syncSendText(phone, message, unic_sent=unic_sent)
+                ok = result == "Enviado"
+                async_queue.finalize_job(mgd, job_id, ok, result)
+                hook = async_queue.get_delivery_webhook_url(mgd)
+                if hook:
+                    payload = {
+                        "event": "async_message_delivered",
+                        "job_id": job_id,
+                        "phone": phone,
+                        "success": ok,
+                        "result": result,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    }
+                    async_queue.notify_delivery_webhook(hook, payload)
+            except Exception as e:
+                logging.exception("Erro ao processar job da fila %s", job_id)
+                async_queue.finalize_job(mgd, job_id, False, str(e))
+                hook = async_queue.get_delivery_webhook_url(mgd)
+                if hook:
+                    async_queue.notify_delivery_webhook(
+                        hook,
+                        {
+                            "event": "async_message_delivered",
+                            "job_id": job_id,
+                            "phone": phone,
+                            "success": False,
+                            "result": str(e),
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        },
+                    )
+        finally:
+            whatsapp_send_lock.release()
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -224,8 +332,9 @@ async def send_message(request: SendMessageRequest):
         raise HTTPException(status_code=400, detail="WhatsApp não está conectado")
     
     try:
-        w = AutoBoot.WhatsAppBot(navegador_local, mgd)
-        result = w.syncSendText(request.phone, request.message, unic_sent=request.unic_sent)
+        with whatsapp_send_lock:
+            w = AutoBoot.WhatsAppBot(navegador_local, mgd)
+            result = w.syncSendText(request.phone, request.message, unic_sent=request.unic_sent)
         if result == 'Enviado':
             return {"success": True, "phone": request.phone, "message": "Mensagem enviada com sucesso"}
         else:
@@ -244,14 +353,90 @@ async def send_message_get(phone: str, message: str, unic_sent: bool = False):
         raise HTTPException(status_code=400, detail="WhatsApp não está conectado")
     
     try:
-        w = AutoBoot.WhatsAppBot(navegador_local, mgd)
-        result = w.syncSendText(phone, message, unic_sent=unic_sent)
+        with whatsapp_send_lock:
+            w = AutoBoot.WhatsAppBot(navegador_local, mgd)
+            result = w.syncSendText(phone, message, unic_sent=unic_sent)
         if result == 'Enviado':
             return {"success": True, "phone": phone, "message": "Mensagem enviada com sucesso"}
         else:
             return {"success": False, "phone": phone, "message": f"Erro ao enviar mensagem: {result}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
+
+@app.post("/webhook/delivery", tags=["Webhook"], response_model=DeliveryWebhookResponse)
+async def set_delivery_webhook(body: DeliveryWebhookRequest):
+    """Registra a URL que receberá POST quando um envio da fila assíncrona for concluído."""
+    url = (body.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL do webhook é obrigatória")
+    async_queue.set_delivery_webhook_url(mgd, url)
+    return DeliveryWebhookResponse(success=True, url=url)
+
+
+@app.get("/webhook/delivery", tags=["Webhook"])
+async def get_delivery_webhook():
+    url = async_queue.get_delivery_webhook_url(mgd)
+    return {"success": True, "configured": bool(url), "url": url}
+
+
+@app.delete("/webhook/delivery", tags=["Webhook"], response_model=DeliveryWebhookResponse)
+async def delete_delivery_webhook():
+    async_queue.clear_delivery_webhook(mgd)
+    return DeliveryWebhookResponse(success=True, url=None)
+
+
+@app.post("/sendMessageAsync", tags=["Mensagens"], response_model=SendMessageAsyncResponse)
+async def send_message_async(request: SendMessageRequest):
+    """
+    Enfileira o envio no MongoDB. O worker envia quando não houver outro envio em andamento
+    (endpoint síncrono ou outro item da fila) e a sessão estiver logada. Se houver webhook configurado,
+    ele recebe um POST ao terminar.
+    """
+    obter_navegador()
+
+    hook = async_queue.get_delivery_webhook_url(mgd)
+    webhook_ok = bool(hook)
+    job_id = async_queue.enqueue_job(mgd, request.phone, request.message, request.unic_sent)
+
+    if webhook_ok:
+        msg = "Mensagem enfileirada; você será notificado no webhook quando o envio for concluído."
+    else:
+        msg = (
+            "Mensagem enfileirada para envio assíncrono. Atenção: não há webhook de entrega configurado "
+            "(POST /webhook/delivery); o envio será feito pela fila, mas você não receberá notificação automática ao concluir."
+        )
+
+    return SendMessageAsyncResponse(
+        success=True,
+        queued=True,
+        job_id=job_id,
+        webhook_configured=webhook_ok,
+        webhook_config_missing=not webhook_ok,
+        message=msg,
+    )
+
+
+@app.get("/getSendQueue", tags=["Mensagens"], response_model=SendQueueListResponse)
+async def get_send_queue(
+    page: int = Query(1, ge=1, description="Página (começa em 1)"),
+    page_size: int = Query(10, ge=1, le=100, description="Itens por página (padrão 10)"),
+):
+    """
+    Lista entradas da fila de envio assíncrono, da mais recente para a mais antiga (`created_at` DESC).
+    """
+    raw, total = async_queue.list_queue_jobs_desc(mgd, page, page_size)
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    items = [SendQueueJobItem.model_validate(r) for r in raw]
+    return SendQueueListResponse(
+        success=True,
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
 
 @app.get("/getChats", tags=["Chats"], response_model=GetChatsResponse)
 async def get_chats(limit: int = Query(10, ge=1, le=50, description="Número de chats a retornar (1-50)")):
@@ -360,8 +545,11 @@ async def reset_whatsapp():
 @app.on_event("startup")
 async def startup_event():
     global selenium_thread
+    async_queue.ensure_queue_indexes(mgd)
     selenium_thread = threading.Thread(target=iniciar_selenium)
     selenium_thread.start()
+    worker = threading.Thread(target=_run_message_queue_worker, name="wa-async-queue", daemon=True)
+    worker.start()
 
 if __name__ == "__main__":
     import uvicorn

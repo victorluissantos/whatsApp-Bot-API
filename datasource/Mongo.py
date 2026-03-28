@@ -16,19 +16,29 @@ class MongoDBConnector:
                     continue
             raise ValueError(f"Nenhuma variável encontrada entre: {', '.join(keys)}")
 
-        # Aceita tanto variáveis no padrão novo (MONGO_*) quanto no legado (MONGO*)
-        mongo_user = get_env("MONGO_USER", "MONGOUSER")
-        mongo_password = get_env("MONGO_PASSWORD", "MONGOPASSWORD")
-        mongo_host = get_env("MONGO_NAME", "MONGONAME")  # Nome do container no Docker
-        mongo_port = get_env("MONGO_PORT", "MONGOPORT")
+        def get_env_optional(*keys):
+            for key in keys:
+                try:
+                    v = env(key)
+                    if v is not None and str(v).strip() != "":
+                        return str(v).strip()
+                except Exception:
+                    continue
+            return None
+
         mongo_db = get_env("MONGO_DB", "MONGODB")
         mongo_collection = get_env("MONGO_COLLECTION", "MONGOCOLLECTION")
 
-        # String de conexão com autenticação - usando authSource=admin
-        mongo_uri = f"mongodb://{mongo_user}:{mongo_password}@{mongo_host}:{mongo_port}/{mongo_db}?authSource=admin"
+        # Docker Compose costuma definir MONGO_URI; senão monta URI a partir das partes.
+        mongo_uri = get_env_optional("MONGO_URI", "MONGO_CONNECTION_STRING")
+        if not mongo_uri:
+            mongo_user = get_env("MONGO_USER", "MONGOUSER")
+            mongo_password = get_env("MONGO_PASSWORD", "MONGOPASSWORD")
+            mongo_host = get_env("MONGO_NAME", "MONGONAME")
+            mongo_port = get_env("MONGO_PORT", "MONGOPORT")
+            mongo_uri = f"mongodb://{mongo_user}:{mongo_password}@{mongo_host}:{mongo_port}/{mongo_db}?authSource=admin"
 
         try:
-            # Conectar ao MongoDB
             self.mongo_client = pymongo.MongoClient(mongo_uri)
             self.db = self.mongo_client[mongo_db]
             self.collection = self.db[mongo_collection]

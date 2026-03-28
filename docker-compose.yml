@@ -13,11 +13,14 @@ services:
         networks:
             - kallaf
         environment:
-            - MONGO_URI=mongodb://${MONGOUSER}:${MONGOPASSWORD}@mongo:27017/${MONGODB}
+            # Hostname `mongo` é o nome do serviço na rede Compose (não use container_name aqui).
+            # authSource=admin alinha com root user do image oficial e com MongoDBConnector.
+            - MONGO_URI=mongodb://${MONGOUSER}:${MONGOPASSWORD}@mongo:27017/${MONGODB}?authSource=admin
         env_file:
             - .env
         depends_on:
-            - mongo
+            mongo:
+                condition: service_healthy
 
     mongo:
         image: mongo:4.4
@@ -32,6 +35,16 @@ services:
             - mongo_data:/data/db
         networks:
             - kallaf
+        healthcheck:
+            test:
+                [
+                    "CMD-SHELL",
+                    'mongo --quiet -u "$$MONGO_INITDB_ROOT_USERNAME" -p "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "db.adminCommand(\"ping\")" || exit 1',
+                ]
+            interval: 5s
+            timeout: 5s
+            retries: 6
+            start_period: 15s
 
 volumes:
     mongo_data:

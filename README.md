@@ -79,6 +79,26 @@ docker compose down
 docker compose up -d --build
 ```
 
+### Verify the VNC port
+
+The VNC server is exposed on host port **5914** (see `5914:5914` in `docker-compose.yml`). After the stack is up, confirm the port is listening before opening the viewer:
+
+```bash
+ss -tln | grep 5914
+```
+
+Or test TCP connectivity:
+
+```bash
+nc -zv 127.0.0.1 5914
+```
+
+With Docker Compose, you can also show the published mapping for the service port:
+
+```bash
+docker compose port fastapi 5914
+```
+
 - Open the container desktop via VNC:
 
 ```bash
