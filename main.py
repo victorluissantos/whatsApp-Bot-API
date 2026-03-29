@@ -5,6 +5,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
+import os
 from decouple import Config, RepositoryEnv
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -20,6 +21,7 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 
 from datasource import Mongo, AutoBoot, Chats, Whats, Messages
 from datasource import async_send_queue as async_queue
+from datasource import unread_pane_cache
 
 # Configuração de logging
 logging.basicConfig(level=logging.DEBUG)
@@ -52,8 +54,8 @@ app = FastAPI(
         },
         {
             "name": "Webhook",
-            "description": "Configuração de webhook para notificação após envio assíncrono"
-        }
+            "description": "Webhooks: entrega da fila assíncrona e alterações na lista de não lidas (cache #pane-side)",
+        },
     ]
 )
 
@@ -83,6 +85,8 @@ WINDOW_SHOW_DEBUG = True # set to True for debug visual via VNC
 # Um único envio por vez (síncrono ou worker da fila) para não concorrer no Selenium
 whatsapp_send_lock = threading.Lock()
 _queue_worker_stop = threading.Event()
+# Transição para sessão logada: aciona clique no filtro "Não lidas" / "Unread".
+_prev_logged_in_for_unread_filter = False
 
 # Modelos Pydantic para validação
 class SendMessageRequest(BaseModel):
@@ -122,6 +126,19 @@ class DeliveryWebhookRequest(BaseModel):
 
 
 class DeliveryWebhookResponse(BaseModel):
+    success: bool = Field(..., description="Operação bem-sucedida")
+    url: Optional[str] = Field(None, description="URL configurada (vazia se removida)")
+
+
+class UnreadListWebhookRequest(BaseModel):
+    url: str = Field(
+        ...,
+        max_length=2048,
+        description="URL que receberá POST JSON quando a lista de não lidas (cache) mudar",
+    )
+
+
+class UnreadListWebhookResponse(BaseModel):
     success: bool = Field(..., description="Operação bem-sucedida")
     url: Optional[str] = Field(None, description="URL configurada (vazia se removida)")
 
@@ -266,6 +283,106 @@ def _run_message_queue_worker():
             whatsapp_send_lock.release()
 
 
+def _run_unread_filter_watcher():
+    """
+    Quando o QR termina e a sessão fica logada, tenta clicar no filtro por texto
+    (Não lidas / Unread / …). Repete tentativas com lock curto para não travar envios.
+    """
+    global _prev_logged_in_for_unread_filter
+    whats = Whats.Run()
+    while True:
+        time.sleep(1.5)
+        try:
+            nav = obter_navegador()
+        except Exception:
+            continue
+        try:
+            logged = whats.isLogado(nav)
+        except Exception:
+            logged = False
+        if logged and not _prev_logged_in_for_unread_filter:
+            deadline = time.time() + 120
+            clicked = False
+            while time.time() < deadline:
+                if whatsapp_send_lock.acquire(timeout=10):
+                    try:
+                        if whats.try_click_unread_filter_once(nav):
+                            clicked = True
+                            break
+                    finally:
+                        whatsapp_send_lock.release()
+                time.sleep(1.2)
+            if not clicked:
+                logging.warning(
+                    "Após login, não foi possível clicar em Não lidas/Unread em até 120s "
+                    "(UI diferente ou filtro indisponível)."
+                )
+        _prev_logged_in_for_unread_filter = logged
+
+
+def _run_unread_pane_cache_watcher():
+    """
+    A cada UNREAD_PANE_POLL_SECONDS (default 5), lê #pane-side se a sessão estiver logada.
+    Só adquire whatsapp_send_lock quando livre (nunca compete com envio). Se o snapshot mudar,
+    atualiza o cache e chama o webhook de não lidas, se configurado.
+    """
+    whats = Whats.Run()
+    chats_runner = Chats.Run()
+    try:
+        interval = float(os.environ.get("UNREAD_PANE_POLL_SECONDS", "5") or "5")
+    except ValueError:
+        interval = 5.0
+    interval = max(1.0, interval)
+    try:
+        max_chats = int(os.environ.get("UNREAD_PANE_MAX_CHATS", "100") or "100")
+    except ValueError:
+        max_chats = 100
+    max_chats = max(1, min(max_chats, 200))
+
+    while True:
+        try:
+            nav = obter_navegador()
+        except Exception:
+            time.sleep(interval)
+            continue
+        try:
+            logged = whats.isLogado(nav)
+        except Exception:
+            logged = False
+        if not logged:
+            unread_pane_cache.clear_cache()
+            time.sleep(interval)
+            continue
+        if not whatsapp_send_lock.acquire(blocking=False):
+            time.sleep(interval)
+            continue
+        try:
+            raw = chats_runner.getUnreadChatsFromPaneSide(nav, limit=max_chats)
+            if not isinstance(raw, list):
+                time.sleep(interval)
+                continue
+            fp = unread_pane_cache.fingerprint_for_chats(raw)
+            if unread_pane_cache.update_if_changed(raw, fp):
+                url = async_queue.get_unread_list_webhook_url(mgd)
+                if url:
+                    async_queue.notify_unread_list_webhook(
+                        url,
+                        {
+                            "event": "unread_chat_list_changed",
+                            "timestamp": time.strftime(
+                                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                            ),
+                            "chats": raw,
+                            "total": len(raw),
+                        },
+                    )
+        except Exception:
+            logging.exception("Erro no watcher de cache #pane-side (não lidas)")
+        finally:
+            whatsapp_send_lock.release()
+        time.sleep(interval)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
@@ -386,6 +503,27 @@ async def delete_delivery_webhook():
     return DeliveryWebhookResponse(success=True, url=None)
 
 
+@app.post("/webhook/unread-list", tags=["Webhook"], response_model=UnreadListWebhookResponse)
+async def set_unread_list_webhook(body: UnreadListWebhookRequest):
+    url = (body.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL do webhook é obrigatória")
+    async_queue.set_unread_list_webhook_url(mgd, url)
+    return UnreadListWebhookResponse(success=True, url=url)
+
+
+@app.get("/webhook/unread-list", tags=["Webhook"])
+async def get_unread_list_webhook():
+    url = async_queue.get_unread_list_webhook_url(mgd)
+    return {"success": True, "configured": bool(url), "url": url}
+
+
+@app.delete("/webhook/unread-list", tags=["Webhook"], response_model=UnreadListWebhookResponse)
+async def delete_unread_list_webhook():
+    async_queue.clear_unread_list_webhook(mgd)
+    return UnreadListWebhookResponse(success=True, url=None)
+
+
 @app.post("/sendMessageAsync", tags=["Mensagens"], response_model=SendMessageAsyncResponse)
 async def send_message_async(request: SendMessageRequest):
     """
@@ -490,6 +628,25 @@ async def get_chats(limit: int = Query(10, ge=1, le=50, description="Número de 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
+
+@app.get("/getChatsUnread", tags=["Chats"], response_model=GetChatsResponse)
+async def get_chats_unread(
+    limit: int = Query(50, ge=1, le=200, description="Máximo de itens retornados do cache"),
+):
+    """
+    Lista de chats não lidas conforme o último snapshot do #pane-side (filtro Unread).
+    Não acessa o DOM: usa apenas o cache atualizado pelo processo em background.
+    """
+    chats_full, _ts = unread_pane_cache.get_snapshot()
+    sliced = chats_full[:limit]
+    return {
+        "success": True,
+        "chats": sliced,
+        "total": len(sliced),
+        "limit": limit,
+    }
+
+
 @app.get("/getMessage", tags=["Mensagens"], response_model=GetMessagesResponse)
 async def get_message(phone: str = Query(..., description="Número de telefone do contato")):
     """
@@ -550,6 +707,14 @@ async def startup_event():
     selenium_thread.start()
     worker = threading.Thread(target=_run_message_queue_worker, name="wa-async-queue", daemon=True)
     worker.start()
+    unread_watcher = threading.Thread(
+        target=_run_unread_filter_watcher, name="wa-unread-filter", daemon=True
+    )
+    unread_watcher.start()
+    pane_cache_watcher = threading.Thread(
+        target=_run_unread_pane_cache_watcher, name="wa-unread-pane-cache", daemon=True
+    )
+    pane_cache_watcher.start()
 
 if __name__ == "__main__":
     import uvicorn

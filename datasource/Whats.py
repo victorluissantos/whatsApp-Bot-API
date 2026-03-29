@@ -5,7 +5,12 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import (
+	NoSuchElementException,
+	TimeoutException,
+	StaleElementReferenceException,
+)
+import logging
 from decouple import Config, RepositoryEnv
 from datetime import datetime
 from PIL import Image
@@ -133,6 +138,39 @@ class Run:
 	            return False
 	    except Exception as e:
 	        return False
+
+	# Rótulos do filtro "só não lidas" no topo da lista de chats (WhatsApp Web por idioma).
+	_UNREAD_FILTER_LABELS = (
+		"Não lidas",
+		"Unread",
+		"No leídos",
+	)
+
+	def try_click_unread_filter_once(self, navegador=None):
+		"""
+		Uma tentativa de clicar no chip de filtro por texto visível (sem depender de class/id).
+		Retorna True se algum clique foi disparado.
+		"""
+		if navegador is None:
+			navegador = self.navegador
+		for label in self._UNREAD_FILTER_LABELS:
+			xpath = f"//span[normalize-space()='{label}']"
+			try:
+				for el in navegador.find_elements(By.XPATH, xpath):
+					if not el.is_displayed():
+						continue
+					try:
+						el.click()
+					except Exception:
+						try:
+							navegador.execute_script("arguments[0].click();", el)
+						except Exception:
+							continue
+					logging.info("Filtro de conversas não lidas acionado (rótulo: %s)", label)
+					return True
+			except StaleElementReferenceException:
+				continue
+		return False
 
 	def getScreenShot(self, navegador=None):
 		file_name = 'static/tmp/shot.png'

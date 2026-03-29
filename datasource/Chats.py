@@ -6,11 +6,137 @@ from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException
 from selenium.common.exceptions import TimeoutException
 from datetime import datetime
+import re
 import requests
 import time
 
 
 class Run:
+
+    def getUnreadChatsFromPaneSide(self, navegador, limit=100):
+        """
+        Lê linhas da lista de conversas dentro de #pane-side (ex.: filtro Não lidas).
+        Retorno no mesmo formato de getAllChats (name, phone, lastMessage, dateTime, photo, unreadCount).
+        """
+        chat_list = []
+        try:
+            pane = navegador.find_element(By.ID, "pane-side")
+        except NoSuchElementException:
+            return chat_list
+
+        grid = None
+        grid_xpaths = [
+            './/div[@role="grid" and @aria-label="Lista de conversas"]',
+            './/div[@role="grid" and @aria-label="Chat list"]',
+            './/div[@role="grid" and @aria-label="Conversation list"]',
+            './/div[@role="grid" and contains(@aria-label, "onvers")]',
+            './/div[@role="grid"]',
+        ]
+        for gx in grid_xpaths:
+            try:
+                found = pane.find_elements(By.XPATH, gx)
+                if found:
+                    grid = found[0]
+                    break
+            except Exception:
+                continue
+        if not grid:
+            return chat_list
+
+        rows = grid.find_elements(By.XPATH, './/div[@role="row"]')
+        for i, row in enumerate(rows):
+            if i >= limit:
+                break
+            item = self._extract_chat_from_pane_row(row)
+            if item:
+                chat_list.append(item)
+        return chat_list
+
+    def _extract_chat_from_pane_row(self, chat_row):
+        try:
+            name = None
+            for el in chat_row.find_elements(By.XPATH, './/span[@title]'):
+                t = el.get_attribute("title")
+                if t and t.strip():
+                    name = t.strip()
+                    break
+            if not name:
+                for el in chat_row.find_elements(By.XPATH, './/span[@dir="auto"]'):
+                    tx = (el.text or "").strip()
+                    if tx and len(tx) > 1 and not re.match(r"^\d+$", tx):
+                        if "mensagem" in tx.lower() and "lida" in tx.lower():
+                            continue
+                        if "unread" in tx.lower():
+                            continue
+                        name = tx
+                        break
+            name = name or "Contato sem nome"
+
+            last_message = "Sem mensagem"
+            for el in chat_row.find_elements(
+                By.XPATH,
+                './/span[contains(@class, "x1cy8zhl")]//span[@dir="ltr"] | .//span[contains(@class, "x1cy8zhl")]//span[@dir="auto"]',
+            ):
+                tx = (el.text or "").strip()
+                if tx and tx != name:
+                    last_message = tx
+                    break
+
+            date_time = "Data não disponível"
+            for el in chat_row.find_elements(
+                By.XPATH,
+                './/div[contains(@class, "_ak8i")]//span | .//div[contains(@class, "x1s688f")]//span',
+            ):
+                tx = (el.text or "").strip()
+                if tx and len(tx) < 40 and tx != last_message:
+                    date_time = tx
+                    break
+
+            photo_url = None
+            for img in chat_row.find_elements(By.XPATH, './/img[@src]'):
+                src = img.get_attribute("src")
+                if src and "whatsapp.net" in src:
+                    photo_url = src
+                    break
+
+            unread_count = "1"
+            for el in chat_row.find_elements(By.XPATH, './/span[contains(@class, "xzpqnlu")]'):
+                tx = (el.text or "").strip()
+                if tx:
+                    m = re.search(r"(\d+)", tx)
+                    if m:
+                        unread_count = m.group(1)
+                        break
+            if unread_count == "1":
+                try:
+                    for el in chat_row.find_elements(
+                        By.XPATH,
+                        './/span[@aria-label][contains(@aria-label, "lida") or contains(@aria-label, "unread") or contains(@aria-label, "leíd")]',
+                    ):
+                        al = el.get_attribute("aria-label") or ""
+                        m = re.search(r"(\d+)", al)
+                        if m:
+                            unread_count = m.group(1)
+                            break
+                except Exception:
+                    pass
+
+            phone = None
+            if name and name.strip().startswith("+"):
+                phone = name
+            elif name and re.search(r"\d{10,}", name):
+                phone = name
+
+            return {
+                "name": name,
+                "phone": phone,
+                "lastMessage": last_message,
+                "dateTime": date_time,
+                "photo": photo_url,
+                "unreadCount": str(unread_count),
+            }
+        except Exception:
+            return None
 
     def getUnreadChats(self, navegador):
         try:

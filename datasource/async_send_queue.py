@@ -12,6 +12,8 @@ import requests
 QUEUE_COLLECTION = "wa_message_queue"
 WEBHOOK_CONFIG_COLLECTION = "wa_delivery_webhook"
 WEBHOOK_DOC_ID = "config"
+UNREAD_LIST_WEBHOOK_COLLECTION = "wa_unread_list_webhook"
+UNREAD_LIST_WEBHOOK_DOC_ID = "config"
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,10 @@ def _queue(mgd) -> Any:
 
 def _webhook_coll(mgd) -> Any:
     return mgd.db[WEBHOOK_CONFIG_COLLECTION]
+
+
+def _unread_webhook_coll(mgd) -> Any:
+    return mgd.db[UNREAD_LIST_WEBHOOK_COLLECTION]
 
 
 def enqueue_job(mgd, phone: str, message: str, unic_sent: bool) -> str:
@@ -95,6 +101,36 @@ def notify_delivery_webhook(url: str, payload: dict) -> None:
         r.raise_for_status()
     except Exception as e:
         logger.warning("Webhook de entrega falhou: %s", e)
+
+
+def get_unread_list_webhook_url(mgd) -> Optional[str]:
+    doc = _unread_webhook_coll(mgd).find_one({"_id": UNREAD_LIST_WEBHOOK_DOC_ID})
+    if not doc:
+        return None
+    url = doc.get("url")
+    if not url or not str(url).strip():
+        return None
+    return str(url).strip()
+
+
+def set_unread_list_webhook_url(mgd, url: str) -> None:
+    _unread_webhook_coll(mgd).update_one(
+        {"_id": UNREAD_LIST_WEBHOOK_DOC_ID},
+        {"$set": {"url": url.strip(), "updated_at": datetime.utcnow()}},
+        upsert=True,
+    )
+
+
+def clear_unread_list_webhook(mgd) -> None:
+    _unread_webhook_coll(mgd).delete_one({"_id": UNREAD_LIST_WEBHOOK_DOC_ID})
+
+
+def notify_unread_list_webhook(url: str, payload: dict) -> None:
+    try:
+        r = requests.post(url, json=payload, timeout=15, headers={"Content-Type": "application/json"})
+        r.raise_for_status()
+    except Exception as e:
+        logger.warning("Webhook da lista de não lidas falhou: %s", e)
 
 
 def ensure_queue_indexes(mgd) -> None:
