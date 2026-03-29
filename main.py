@@ -54,7 +54,7 @@ app = FastAPI(
         },
         {
             "name": "Webhook",
-            "description": "Webhooks: entrega da fila assíncrona e alterações na lista de não lidas (cache #pane-side)",
+            "description": "URL única (POST /webhook/delivery): recebe todos os eventos de integração; use o campo event no JSON",
         },
     ]
 )
@@ -122,23 +122,14 @@ class GetMessagesResponse(BaseModel):
 
 
 class DeliveryWebhookRequest(BaseModel):
-    url: str = Field(..., max_length=2048, description="URL HTTPS (ou HTTP em dev) que receberá POST ao concluir envio da fila")
-
-
-class DeliveryWebhookResponse(BaseModel):
-    success: bool = Field(..., description="Operação bem-sucedida")
-    url: Optional[str] = Field(None, description="URL configurada (vazia se removida)")
-
-
-class UnreadListWebhookRequest(BaseModel):
     url: str = Field(
         ...,
         max_length=2048,
-        description="URL que receberá POST JSON quando a lista de não lidas (cache) mudar",
+        description="URL única: recebe POST para fila assíncrona (event=async_message_delivered) e lista não lidas (event=unread_chat_list_changed)",
     )
 
 
-class UnreadListWebhookResponse(BaseModel):
+class DeliveryWebhookResponse(BaseModel):
     success: bool = Field(..., description="Operação bem-sucedida")
     url: Optional[str] = Field(None, description="URL configurada (vazia se removida)")
 
@@ -363,9 +354,9 @@ def _run_unread_pane_cache_watcher():
                 continue
             fp = unread_pane_cache.fingerprint_for_chats(raw)
             if unread_pane_cache.update_if_changed(raw, fp):
-                url = async_queue.get_unread_list_webhook_url(mgd)
+                url = async_queue.get_delivery_webhook_url(mgd)
                 if url:
-                    async_queue.notify_unread_list_webhook(
+                    async_queue.notify_delivery_webhook(
                         url,
                         {
                             "event": "unread_chat_list_changed",
@@ -483,7 +474,7 @@ async def send_message_get(phone: str, message: str, unic_sent: bool = False):
 
 @app.post("/webhook/delivery", tags=["Webhook"], response_model=DeliveryWebhookResponse)
 async def set_delivery_webhook(body: DeliveryWebhookRequest):
-    """Registra a URL que receberá POST quando um envio da fila assíncrona for concluído."""
+    """Registra a URL única de integração: fila assíncrona e mudanças na lista de não lidas (campo `event` no body)."""
     url = (body.url or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="URL do webhook é obrigatória")
@@ -503,33 +494,12 @@ async def delete_delivery_webhook():
     return DeliveryWebhookResponse(success=True, url=None)
 
 
-@app.post("/webhook/unread-list", tags=["Webhook"], response_model=UnreadListWebhookResponse)
-async def set_unread_list_webhook(body: UnreadListWebhookRequest):
-    url = (body.url or "").strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="URL do webhook é obrigatória")
-    async_queue.set_unread_list_webhook_url(mgd, url)
-    return UnreadListWebhookResponse(success=True, url=url)
-
-
-@app.get("/webhook/unread-list", tags=["Webhook"])
-async def get_unread_list_webhook():
-    url = async_queue.get_unread_list_webhook_url(mgd)
-    return {"success": True, "configured": bool(url), "url": url}
-
-
-@app.delete("/webhook/unread-list", tags=["Webhook"], response_model=UnreadListWebhookResponse)
-async def delete_unread_list_webhook():
-    async_queue.clear_unread_list_webhook(mgd)
-    return UnreadListWebhookResponse(success=True, url=None)
-
-
 @app.post("/sendMessageAsync", tags=["Mensagens"], response_model=SendMessageAsyncResponse)
 async def send_message_async(request: SendMessageRequest):
     """
     Enfileira o envio no MongoDB. O worker envia quando não houver outro envio em andamento
-    (endpoint síncrono ou outro item da fila) e a sessão estiver logada. Se houver webhook configurado,
-    ele recebe um POST ao terminar.
+    (endpoint síncrono ou outro item da fila) e a sessão estiver logada. Se a URL única estiver
+    configurada (POST /webhook/delivery), recebe um POST com event=async_message_delivered ao terminar.
     """
     obter_navegador()
 
@@ -538,11 +508,11 @@ async def send_message_async(request: SendMessageRequest):
     job_id = async_queue.enqueue_job(mgd, request.phone, request.message, request.unic_sent)
 
     if webhook_ok:
-        msg = "Mensagem enfileirada; você será notificado no webhook quando o envio for concluído."
+        msg = "Mensagem enfileirada; a URL configurada em POST /webhook/delivery receberá POST ao concluir o envio."
     else:
         msg = (
-            "Mensagem enfileirada para envio assíncrono. Atenção: não há webhook de entrega configurado "
-            "(POST /webhook/delivery); o envio será feito pela fila, mas você não receberá notificação automática ao concluir."
+            "Mensagem enfileirada para envio assíncrono. Não há URL em POST /webhook/delivery; "
+            "o envio ocorre pela fila sem notificação HTTP (nem para fila nem para lista não lidas)."
         )
 
     return SendMessageAsyncResponse(
