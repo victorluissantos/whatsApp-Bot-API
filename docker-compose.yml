@@ -16,6 +16,8 @@ services:
             # Hostname `mongo` é o nome do serviço na rede Compose (não use container_name aqui).
             # authSource=admin alinha com root user do image oficial e com MongoDBConnector.
             - MONGO_URI=mongodb://${MONGOUSER}:${MONGOPASSWORD}@mongo:27017/${MONGODB}?authSource=admin
+            # Fuso horário (IANA). Afeta Chrome/WhatsApp Web e timestamps do sistema. Defina `TZ` no `.env`.
+            - TZ=${TZ:-UTC}
         env_file:
             - .env
         depends_on:

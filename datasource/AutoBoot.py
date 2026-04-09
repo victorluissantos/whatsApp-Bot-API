@@ -114,10 +114,24 @@ class WhatsAppBot:
 			inputField.send_keys(Keys.BACKSPACE)
 			print(f"[DEPURACAO] Iniciando digitação da mensagem: {message}")
 
-			for i, parte in enumerate(message.split('\n')):
-				if i > 0:
-					inputField.send_keys(Keys.SHIFT, Keys.ENTER)
-				inputField.send_keys(parte)
+			# send_keys no contenteditable costuma falhar com emoji (planos Unicode > BMP).
+			# Colar via clipboard é o fluxo mais estável no WhatsApp Web + Selenium.
+			if not message.isascii():
+				try:
+					pyperclip.copy(message)
+					time.sleep(0.05)
+					inputField.send_keys(Keys.CONTROL, "v")
+				except Exception as clip_err:
+					print(f"[DEPURACAO] Clipboard falhou ({clip_err}), tentando send_keys")
+					for i, parte in enumerate(message.split("\n")):
+						if i > 0:
+							inputField.send_keys(Keys.SHIFT, Keys.ENTER)
+						inputField.send_keys(parte)
+			else:
+				for i, parte in enumerate(message.split("\n")):
+					if i > 0:
+						inputField.send_keys(Keys.SHIFT, Keys.ENTER)
+					inputField.send_keys(parte)
 
 			time.sleep(0.3)
 			inputField.send_keys(Keys.RETURN)
@@ -142,7 +156,9 @@ class WhatsAppBot:
 				self.navegador.save_screenshot("static/tmp/send_exception.png")
 			except Exception:
 				pass
-			status = "Inválido!"
+			# Não confundir falha de automação com número inválido (UI WhatsApp).
+			err_preview = str(e).replace("\n", " ")[:180]
+			status = f"Erro ao enviar: {err_preview}"
 
 		# Volta para a home
 		webdriver.ActionChains(self.navegador).send_keys(Keys.ESCAPE).perform()

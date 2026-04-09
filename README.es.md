@@ -132,11 +132,34 @@ vncviewer 127.0.0.1:5914
 
 Configura las siguientes variables en el archivo `.env`:
 
-- `MONGO_USER`: Usuario de MongoDB
-- `MONGO_PASSWORD`: Contraseña de MongoDB
-- `MONGO_DB`: Nombre de la base de datos
-- `FASTAPI_PORT`: Puerto de la aplicación (por defecto: 8000)
-- `FASTAPI_NAME`: Nombre del contenedor (por defecto: fastapi-app)
+- `MONGOUSER` (o `MONGO_USER` en el código): usuario de MongoDB — `docker-compose` usa `MONGOUSER`
+- `MONGOPASSWORD`: contraseña de MongoDB
+- `MONGODB`: nombre de la base de datos
+- `FASTAPIPORT`: puerto de la aplicación (por defecto: 8000)
+- `FASTAPINAME`: nombre del contenedor (por defecto: fastapi-app)
+- `TZ`: zona horaria del contenedor ([nombre IANA](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)). Afecta el sistema, Python y Chrome/WhatsApp Web. Si no se define, Compose usa `UTC`.
+
+### Zona horaria (Docker y WhatsApp Web)
+
+La imagen del servicio FastAPI incluye `tzdata` y pasa `TZ` desde tu `.env` (ver `docker-compose.yml`). Sin eso, el contenedor suele usar **UTC** y las horas en WhatsApp Web pueden desfasarse respecto a tu hora local.
+
+1. Define `TZ` en `.env` según tu región (ejemplos en la tabla).
+2. Reinicia el stack: `docker compose down && docker compose up -d --build` (reconstruye una vez tras actualizar el proyecto que añade `tzdata`).
+
+**Cómo identificar la zona**
+
+- Lista completa: [Wikipedia — zonas tz](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) (columna *TZ identifier*).
+- Mapa / reloj mundial: [timeanddate.com](https://www.timeanddate.com/worldclock/).
+
+| Región | Valor de `TZ` (IANA) |
+|--------|----------------------|
+| Brasil (Brasilia) | `America/Sao_Paulo` |
+| Portugal | `Europe/Lisbon` |
+| España (península) | `Europe/Madrid` |
+| Reino Unido | `Europe/London` |
+| EE. UU. — este | `America/New_York` |
+| EE. UU. — oeste | `America/Los_Angeles` |
+| UTC | `UTC` |
 
 ### Configuración Inicial
 

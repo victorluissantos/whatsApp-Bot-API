@@ -132,11 +132,34 @@ vncviewer 127.0.0.1:5914
 
 Configure as seguintes variáveis no arquivo `.env`:
 
-- `MONGO_USER`: Usuário do MongoDB
-- `MONGO_PASSWORD`: Senha do MongoDB
-- `MONGO_DB`: Nome do banco de dados
-- `FASTAPI_PORT`: Porta da aplicação (padrão: 8000)
-- `FASTAPI_NAME`: Nome do container (padrão: fastapi-app)
+- `MONGOUSER` (ou `MONGO_USER` no código): usuário do MongoDB — o `docker-compose` usa `MONGOUSER`
+- `MONGOPASSWORD`: senha do MongoDB
+- `MONGODB`: nome do banco de dados
+- `FASTAPIPORT`: porta da aplicação (padrão: 8000)
+- `FASTAPINAME`: nome do container (padrão: fastapi-app)
+- `TZ`: fuso horário do container ([nome IANA](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)). Afeta o sistema, o Python e o Chrome/WhatsApp Web. Se não definir, o Compose usa `UTC`.
+
+### Fuso horário (Docker e WhatsApp Web)
+
+A imagem do serviço FastAPI inclui `tzdata` e repassa `TZ` do `.env` (veja `docker-compose.yml`). Sem isso, o container costuma ficar em **UTC**, e os horários nas mensagens do WhatsApp Web podem parecer deslocados em relação ao seu fuso local (não é “inglês do Chrome” em si — é o relógio do container).
+
+1. Defina `TZ` no `.env` conforme sua região (exemplos na tabela abaixo).
+2. Reinicie o stack: `docker compose down && docker compose up -d --build` (faça rebuild uma vez após atualizar o projeto que adicionou `tzdata`).
+
+**Como descobrir o identificador**
+
+- Lista completa: [Wikipedia — fusos tz](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) (use a coluna *TZ identifier* no `TZ`).
+- Mapa / relógio mundial: [timeanddate.com](https://www.timeanddate.com/worldclock/) (confira o nome IANA correspondente na lista acima).
+
+| Região / caso | Valor de `TZ` (IANA) |
+|---------------|----------------------|
+| Brasil (Brasília) | `America/Sao_Paulo` |
+| Portugal | `Europe/Lisbon` |
+| Espanha (península) | `Europe/Madrid` |
+| Reino Unido | `Europe/London` |
+| EUA — leste | `America/New_York` |
+| EUA — oeste | `America/Los_Angeles` |
+| UTC | `UTC` |
 
 ### Configuração Inicial
 

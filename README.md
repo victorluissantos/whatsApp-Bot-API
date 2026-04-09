@@ -137,6 +137,29 @@ Configure the following variables in the `.env` file:
 - `MONGODB`: Database name
 - `FASTAPIPORT`: Application port (default: 8000)
 - `FASTAPINAME`: Container name (default: fastapi-app)
+- `TZ`: Container timezone ([IANA time zone name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)). Affects system time, Python, and the Chrome session used for WhatsApp Web. If unset, Compose defaults to `UTC`.
+
+### Timezone (Docker and WhatsApp Web)
+
+The FastAPI service image includes `tzdata` and passes `TZ` from your `.env` (see `docker-compose.yml`). Without it, the container often runs in **UTC**, so message times in WhatsApp Web can look offset from your local time.
+
+1. Set `TZ` in `.env` to your region (examples below).
+2. Restart the stack: `docker compose down && docker compose up -d --build` (rebuild once after pulling changes that add `tzdata`).
+
+**Find your zone name**
+
+- Full list of identifiers: [Wikipedia — tz database time zones](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) (column *TZ identifier* is what you put in `TZ`).
+- Pick a city on the map: [timeanddate.com — world clock](https://www.timeanddate.com/worldclock/) (use the matching IANA name from the list above if the site shows only a label).
+
+| Region / use case | `TZ` value (IANA) |
+|-------------------|-------------------|
+| Brazil (Brasília) | `America/Sao_Paulo` |
+| Portugal | `Europe/Lisbon` |
+| Spain (peninsula) | `Europe/Madrid` |
+| United Kingdom | `Europe/London` |
+| US Eastern | `America/New_York` |
+| US Pacific | `America/Los_Angeles` |
+| UTC | `UTC` |
 
 ### Initial Setup
 

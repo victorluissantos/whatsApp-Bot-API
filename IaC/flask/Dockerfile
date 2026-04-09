@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Instalar dependências do sistema
 RUN apt-get update && apt-get install -y \
     wget \
@@ -7,6 +9,8 @@ RUN apt-get update && apt-get install -y \
     unzip \
     xvfb \
     x11vnc \
+    xclip \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Instalar Google Chrome
