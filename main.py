@@ -221,8 +221,9 @@ def obter_navegador():
 
 
 def _run_message_queue_worker():
-    """Máquina de estados simples: se o lock de envio está livre e há jobs pendentes, processa um."""
+    """Consome 1 job por vez do RabbitMQ e processa envio no WhatsApp."""
     while not _queue_worker_stop.is_set():
+        delivery_tag = None
         time.sleep(0.35)
         if not whatsapp_send_lock.acquire(blocking=False):
             continue
@@ -231,14 +232,19 @@ def _run_message_queue_worker():
             whats = Whats.Run()
             if not whats.isLogado(navegador_local):
                 continue
-            job = async_queue.claim_next_pending_job(mgd)
-            if not job:
+            job, delivery_tag = async_queue.get_next_rabbit_job()
+            if not job or delivery_tag is None:
                 continue
-            job_id = job["job_id"]
-            phone = job["phone"]
-            message = job["message"]
+            job_id = str(job.get("job_id", "")).strip()
+            phone = str(job.get("phone", "")).strip()
+            message = str(job.get("message", ""))
             unic_sent = bool(job.get("unic_sent", False))
+            if not job_id or not phone or not message:
+                async_queue.ack_rabbit_job(delivery_tag)
+                logging.warning("Job inválido recebido do RabbitMQ: %s", job)
+                continue
             try:
+                async_queue.mark_job_processing(mgd, job_id)
                 w = AutoBoot.WhatsAppBot(navegador_local, mgd)
                 result = w.syncSendText(phone, message, unic_sent=unic_sent)
                 ok = result == "Enviado"
@@ -254,6 +260,7 @@ def _run_message_queue_worker():
                         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     }
                     async_queue.notify_delivery_webhook(hook, payload)
+                async_queue.ack_rabbit_job(delivery_tag)
             except Exception as e:
                 logging.exception("Erro ao processar job da fila %s", job_id)
                 async_queue.finalize_job(mgd, job_id, False, str(e))
@@ -270,6 +277,15 @@ def _run_message_queue_worker():
                             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                         },
                     )
+                # Em erro de processamento, marca como failed e remove da fila.
+                async_queue.ack_rabbit_job(delivery_tag)
+        except Exception:
+            logging.exception("Erro no consumidor RabbitMQ; job será reencaminhado se já recebido")
+            try:
+                if delivery_tag is not None:
+                    async_queue.nack_rabbit_job(delivery_tag, requeue=True)
+            except Exception:
+                pass
         finally:
             whatsapp_send_lock.release()
 
@@ -505,7 +521,10 @@ async def send_message_async(request: SendMessageRequest):
 
     hook = async_queue.get_delivery_webhook_url(mgd)
     webhook_ok = bool(hook)
-    job_id = async_queue.enqueue_job(mgd, request.phone, request.message, request.unic_sent)
+    try:
+        job_id = async_queue.enqueue_job(mgd, request.phone, request.message, request.unic_sent)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Falha ao enfileirar mensagem no RabbitMQ: {str(e)}")
 
     if webhook_ok:
         msg = "Mensagem enfileirada; a URL configurada em POST /webhook/delivery receberá POST ao concluir o envio."
@@ -673,6 +692,7 @@ async def reset_whatsapp():
 async def startup_event():
     global selenium_thread
     async_queue.ensure_queue_indexes(mgd)
+    async_queue.ensure_rabbit_topology()
     selenium_thread = threading.Thread(target=iniciar_selenium)
     selenium_thread.start()
     worker = threading.Thread(target=_run_message_queue_worker, name="wa-async-queue", daemon=True)

@@ -1,11 +1,14 @@
-"""Fila de envio assíncrono e URL única de webhook no MongoDB (todos os POSTs de integração)."""
+"""Fila de envio assíncrono via RabbitMQ e status/webhook no MongoDB."""
 from __future__ import annotations
 
+import json
 import logging
+import os
 import uuid
 from datetime import datetime
 from typing import Any, Optional
 
+import pika
 import pymongo
 import requests
 
@@ -14,6 +17,8 @@ WEBHOOK_CONFIG_COLLECTION = "wa_delivery_webhook"
 WEBHOOK_DOC_ID = "config"
 
 logger = logging.getLogger(__name__)
+_RABBIT_CONNECTION: Optional[pika.BlockingConnection] = None
+_RABBIT_CHANNEL: Optional[pika.adapters.blocking_connection.BlockingChannel] = None
 
 
 def _queue(mgd) -> Any:
@@ -22,6 +27,48 @@ def _queue(mgd) -> Any:
 
 def _webhook_coll(mgd) -> Any:
     return mgd.db[WEBHOOK_CONFIG_COLLECTION]
+
+
+def _rabbit_config() -> dict:
+    return {
+        "host": os.environ.get("RABBITMQ_HOST", "rabbitmq"),
+        "port": int(os.environ.get("RABBITMQ_PORT", "5672")),
+        "user": os.environ.get("RABBITMQ_USER", "admin"),
+        "password": os.environ.get("RABBITMQ_PASS", "admin123"),
+        "vhost": os.environ.get("RABBITMQ_VHOST", "/"),
+        "queue": os.environ.get("RABBITMQ_SEND_QUEUE", "wa_send_message_async"),
+    }
+
+
+def _ensure_rabbit_channel():
+    global _RABBIT_CONNECTION, _RABBIT_CHANNEL
+    cfg = _rabbit_config()
+    if _RABBIT_CONNECTION and _RABBIT_CONNECTION.is_open and _RABBIT_CHANNEL and _RABBIT_CHANNEL.is_open:
+        return _RABBIT_CHANNEL, cfg["queue"]
+
+    credentials = pika.PlainCredentials(cfg["user"], cfg["password"])
+    params = pika.ConnectionParameters(
+        host=cfg["host"],
+        port=cfg["port"],
+        virtual_host=cfg["vhost"],
+        credentials=credentials,
+        heartbeat=30,
+        blocked_connection_timeout=30,
+    )
+    _RABBIT_CONNECTION = pika.BlockingConnection(params)
+    _RABBIT_CHANNEL = _RABBIT_CONNECTION.channel()
+    _RABBIT_CHANNEL.queue_declare(queue=cfg["queue"], durable=True)
+    return _RABBIT_CHANNEL, cfg["queue"]
+
+
+def _publish_to_rabbit(payload: dict) -> None:
+    channel, queue_name = _ensure_rabbit_channel()
+    channel.basic_publish(
+        exchange="",
+        routing_key=queue_name,
+        body=json.dumps(payload),
+        properties=pika.BasicProperties(delivery_mode=2),
+    )
 
 
 def enqueue_job(mgd, phone: str, message: str, unic_sent: bool) -> str:
@@ -36,22 +83,55 @@ def enqueue_job(mgd, phone: str, message: str, unic_sent: bool) -> str:
             "created_at": datetime.utcnow(),
         }
     )
+    try:
+        _publish_to_rabbit(
+            {
+                "job_id": job_id,
+                "phone": phone,
+                "message": message,
+                "unic_sent": bool(unic_sent),
+                "created_at": datetime.utcnow().isoformat() + "Z",
+            }
+        )
+    except Exception as e:
+        _queue(mgd).update_one(
+            {"job_id": job_id},
+            {"$set": {"status": "failed", "result": f"Falha ao publicar no RabbitMQ: {e}", "processed_at": datetime.utcnow()}},
+        )
+        raise
     return job_id
 
 
-def claim_next_pending_job(mgd) -> Optional[dict]:
-    doc = _queue(mgd).find_one_and_update(
-        {"status": "pending"},
-        {
-            "$set": {
-                "status": "processing",
-                "started_at": datetime.utcnow(),
-            }
-        },
-        sort=[("created_at", pymongo.ASCENDING)],
-        return_document=pymongo.ReturnDocument.AFTER,
+def get_next_rabbit_job() -> tuple[Optional[dict], Optional[int]]:
+    channel, _queue_name = _ensure_rabbit_channel()
+    method, _properties, body = channel.basic_get(queue=_queue_name, auto_ack=False)
+    if method is None:
+        return None, None
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except Exception:
+        # Mensagem inválida não deve ficar presa na fila.
+        channel.basic_ack(delivery_tag=method.delivery_tag)
+        logger.warning("Mensagem inválida descartada da fila RabbitMQ")
+        return None, None
+    return data, method.delivery_tag
+
+
+def ack_rabbit_job(delivery_tag: int) -> None:
+    channel, _queue_name = _ensure_rabbit_channel()
+    channel.basic_ack(delivery_tag=delivery_tag)
+
+
+def nack_rabbit_job(delivery_tag: int, requeue: bool = True) -> None:
+    channel, _queue_name = _ensure_rabbit_channel()
+    channel.basic_nack(delivery_tag=delivery_tag, requeue=requeue)
+
+
+def mark_job_processing(mgd, job_id: str) -> None:
+    _queue(mgd).update_one(
+        {"job_id": job_id},
+        {"$set": {"status": "processing", "started_at": datetime.utcnow()}},
     )
-    return doc
 
 
 def finalize_job(mgd, job_id: str, success: bool, result: str) -> None:
@@ -105,6 +185,14 @@ def ensure_queue_indexes(mgd) -> None:
         _queue(mgd).create_index("job_id", unique=True)
     except Exception as e:
         logger.debug("Índices da fila (pode ser idempotente): %s", e)
+
+
+def ensure_rabbit_topology() -> None:
+    """Garante conexão e declaração da fila no startup."""
+    try:
+        _ensure_rabbit_channel()
+    except Exception as e:
+        logger.warning("RabbitMQ indisponível no startup: %s", e)
 
 
 def _iso_utc(dt: Optional[datetime]) -> Optional[str]:

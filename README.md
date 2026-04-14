@@ -7,6 +7,7 @@
 # WhatsApp Bot API - FastAPI
 
 This project was migrated from Flask to FastAPI to improve performance and provide automatic API documentation.
+It now uses RabbitMQ for asynchronous message queueing, while MongoDB keeps message status history and webhook configuration.
 
 ## Main Changes
 
@@ -15,6 +16,7 @@ This project was migrated from Flask to FastAPI to improve performance and provi
 - **Documentation**: Automatic Swagger UI available at `/docs`
 - **Validation**: Pydantic models for data validation
 - **Performance**: Improved performance with FastAPI
+- **Async messaging**: RabbitMQ queue for async sends (`/sendMessageAsync`) with status persisted in MongoDB
 
 ## Available Endpoints
 
@@ -137,6 +139,8 @@ Configure the following variables in the `.env` file:
 - `MONGODB`: Database name
 - `FASTAPIPORT`: Application port (default: 8000)
 - `FASTAPINAME`: Container name (default: fastapi-app)
+- `RABBITMQ_USER`: RabbitMQ username
+- `RABBITMQ_PASS`: RabbitMQ password
 - `TZ`: Container timezone ([IANA time zone name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)). Affects system time, Python, and the Chrome session used for WhatsApp Web. If unset, Compose defaults to `UTC`.
 
 ### Timezone (Docker and WhatsApp Web)
