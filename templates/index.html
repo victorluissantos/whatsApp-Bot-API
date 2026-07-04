@@ -5,12 +5,85 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WhatsApp Bot API - FastAPI</title>
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
             font-family: Arial, sans-serif;
-            max-width: 800px;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+        }
+        .top-nav {
+            background: #128C7E;
+            color: white;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+        .nav-inner {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            min-height: 56px;
+            gap: 16px;
+        }
+        .nav-brand {
+            color: white;
+            text-decoration: none;
+            font-weight: bold;
+            font-size: 1rem;
+            white-space: nowrap;
+        }
+        .nav-toggle {
+            display: none;
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.5);
+            color: white;
+            padding: 6px 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 0;
+            font-size: 18px;
+            line-height: 1;
+        }
+        .nav-menu {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .nav-link {
+            color: white;
+            text-decoration: none;
+            padding: 8px 14px;
+            border-radius: 5px;
+            font-size: 14px;
+            transition: background-color 0.2s ease;
+        }
+        .nav-link:hover {
+            background: rgba(255,255,255,0.15);
+        }
+        .nav-menu button {
+            margin: 0;
+            padding: 8px 14px;
+            font-size: 14px;
+        }
+        .nav-toast {
+            max-width: 900px;
+            margin: 12px auto 0;
+            padding: 0 20px;
+        }
+        .nav-toast .result {
+            margin-top: 0;
+        }
+        .page-wrap {
+            max-width: 900px;
             margin: 0 auto;
             padding: 20px;
-            background-color: #f5f5f5;
         }
         .container {
             background: white;
@@ -21,6 +94,13 @@
         h1 {
             color: #25D366;
             text-align: center;
+            margin-top: 0;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-top: 0;
             margin-bottom: 30px;
         }
         .endpoint {
@@ -57,6 +137,16 @@
         }
         button:hover {
             background: #128C7E;
+        }
+        button.btn-danger {
+            background: #dc3545;
+        }
+        button.btn-danger:hover {
+            background: #c82333;
+        }
+        button.btn-danger:disabled {
+            background: #e4606d;
+            cursor: not-allowed;
         }
         .result {
             background: #f8f9fa;
@@ -139,12 +229,54 @@
         .accordion-content button {
             margin: 10px 5px 0 0;
         }
+
+        @media (max-width: 640px) {
+            .nav-toggle {
+                display: block;
+            }
+            .nav-menu {
+                display: none;
+                flex-direction: column;
+                align-items: stretch;
+                width: 100%;
+                padding: 12px 0 16px;
+                gap: 8px;
+            }
+            .nav-menu.open {
+                display: flex;
+            }
+            .nav-inner {
+                flex-wrap: wrap;
+            }
+            .nav-link,
+            .nav-menu button {
+                width: 100%;
+                text-align: center;
+            }
+            .container {
+                padding: 20px;
+            }
+        }
     </style>
 </head>
 <body>
+    <nav class="top-nav">
+        <div class="nav-inner">
+            <a class="nav-brand" href="/">WhatsApp Bot API</a>
+            <button class="nav-toggle" type="button" aria-label="Abrir menu" onclick="toggleNavMenu()">&#9776;</button>
+            <div class="nav-menu" id="navMenu">
+                <a class="nav-link" href="/docs" target="_blank">Swagger</a>
+                <button id="btnRestartContainer" class="btn-danger" type="button" onclick="restartContainer()">Reiniciar Container</button>
+            </div>
+        </div>
+    </nav>
+
+    <div id="restartContainerResult" class="nav-toast" style="display: none;"></div>
+
+    <div class="page-wrap">
     <div class="container">
         <h1>🤖 WhatsApp Bot API</h1>
-        <p style="text-align: center; color: #666;">API simplificada para automação do WhatsApp</p>
+        <p class="subtitle">API simplificada para automação do WhatsApp</p>
 
         <div class="accordion">
             <div class="accordion-header" onclick="toggleAccordion(this)">
@@ -329,13 +461,14 @@
             </div>
         </div>
 
-        <div style="text-align: center; margin-top: 40px; color: #666;">
-            <p>📖 <a href="/docs" target="_blank">Documentação Swagger UI</a></p>
-        </div>
-
+    </div>
     </div>
 
     <script>
+function toggleNavMenu() {
+    document.getElementById('navMenu').classList.toggle('open');
+}
+
 // Função para controlar o accordion
 function toggleAccordion(header) {
     const content = header.nextElementSibling;
@@ -592,6 +725,28 @@ function checkStatus() {
                 .finally(() => {
                     btn.disabled = false;
                     btn.textContent = 'Resetar WhatsApp (Ctrl+Shift+R)';
+                });
+        }
+
+        function restartContainer() {
+            if (!confirm('Tem certeza que deseja reiniciar o container? A API ficará indisponível por alguns segundos.')) {
+                return;
+            }
+
+            const btn = document.getElementById('btnRestartContainer');
+            const resultDiv = document.getElementById('restartContainerResult');
+            btn.disabled = true;
+            btn.textContent = 'Reiniciando...';
+
+            fetch('/restartContainer', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = '<div class="result">' + (data.message || JSON.stringify(data, null, 2)) + '</div>';
+                })
+                .catch(() => {
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = '<div class="result">Container reiniciando... aguarde alguns segundos e recarregue a página.</div>';
                 });
         }
     </script>

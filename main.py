@@ -5,7 +5,9 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
+import asyncio
 import os
+import signal
 from decouple import Config, RepositoryEnv
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -686,6 +688,20 @@ async def reset_whatsapp():
         return {"success": True, "message": "WhatsApp Web recarregado com Ctrl+Shift+R"}
     except Exception as e:
         return {"success": False, "message": f"Erro ao recarregar: {str(e)}"}
+
+
+async def _schedule_container_restart():
+    await asyncio.sleep(1)
+    os.kill(1, signal.SIGTERM)
+
+
+@app.post("/restartContainer", tags=["Sistema"])
+async def restart_container():
+    asyncio.create_task(_schedule_container_restart())
+    return {
+        "success": True,
+        "message": "Container será reiniciado em instantes. Aguarde alguns segundos e recarregue a página.",
+    }
 
 # Eventos de inicialização
 @app.on_event("startup")
