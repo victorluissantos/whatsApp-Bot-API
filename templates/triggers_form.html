@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block title %}{% if is_edit %}Editar{% else %}Novo{% endif %} Trigger — WhatsApp Bot API{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <div>
+            <h1>{% if is_edit %}Editar trigger{% else %}Novo trigger{% endif %}</h1>
+            <p>Configure padrão, horário e mensagem de resposta</p>
+        </div>
+        <a class="btn btn-secondary" href="/triggers">Voltar</a>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <form class="trigger-form" method="post" action="{% if is_edit %}/triggers/{{ trigger.id }}/edit{% else %}/triggers/new{% endif %}">
+        <div class="form-group">
+            <label for="name">Nome</label>
+            <input type="text" id="name" name="name" maxlength="120" required value="{{ form.name }}">
+        </div>
+
+        <div class="form-group">
+            <label for="pattern">Padrão (LIKE %, AND, OR, IN)</label>
+            <input type="text" id="pattern" name="pattern" maxlength="500" required value="{{ form.pattern }}" placeholder="%preco% and %pr%">
+            <span class="hint">
+                LIKE: <code>%preco%</code> contém · <code>preco%</code> começa · <code>%preco</code> termina · <code>%%</code> qualquer<br>
+                AND: <code>%preco% and %pr%</code> — as duas condições<br>
+                OR: <code>%preco% or %promo%</code> — qualquer uma<br>
+                IN: <code>in(preco,valor,promo)</code> — contém qualquer termo (sem % vira %termo%)<br>
+                Combine: <code>(%preco% or in(promo,oferta)) and %?</code>
+            </span>
+        </div>
+
+        <div class="form-group pattern-test-box">
+            <label>Testar padrão</label>
+            <input type="text" id="testMessage" placeholder="Digite uma mensagem de exemplo...">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="testPattern()" style="margin-top:8px;">Testar</button>
+            <div id="testPatternResult" class="result" style="display:none; margin-top:8px;"></div>
+        </div>
+
+        <div class="form-group">
+            <label class="checkbox-row">
+                <input type="checkbox" name="case_sensitive" value="1" {% if form.case_sensitive %}checked{% endif %}>
+                Sensível a maiúsculas/minúsculas
+            </label>
+        </div>
+
+        <div class="form-group">
+            <label for="reply_message">Mensagem de resposta</label>
+            <textarea id="reply_message" name="reply_message" maxlength="800" required>{{ form.reply_message }}</textarea>
+        </div>
+
+        <div class="form-group">
+            <label>Dias da semana</label>
+            <div class="days-grid">
+                {% for day in day_options %}
+                <label class="day-chip">
+                    <input type="checkbox" name="days_of_week" value="{{ day.value }}" {% if day.value in form.days_of_week %}checked{% endif %}>
+                    {{ day.label }}
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="checkbox-row">
+                <input type="checkbox" id="all_day" name="all_day" value="1" {% if form.all_day %}checked{% endif %} onchange="toggleTimeFields()">
+                Dia todo (sem janela de horário)
+            </label>
+        </div>
+
+        <div id="timeFields" class="form-group{% if form.all_day %} hidden{% endif %}">
+            <label>Janela de horário</label>
+            <div class="time-row">
+                <div>
+                    <label for="time_start">Início</label>
+                    <input type="time" id="time_start" name="time_start" value="{{ form.time_start }}">
+                </div>
+                <div>
+                    <label for="time_end">Fim</label>
+                    <input type="time" id="time_end" name="time_end" value="{{ form.time_end }}">
+                </div>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="checkbox-row">
+                <input type="checkbox" id="unique_enabled" name="unique_enabled" value="1" {% if form.unique_enabled %}checked{% endif %} onchange="toggleUniqueScope()">
+                Execução única (limitar repetições)
+            </label>
+        </div>
+
+        <div id="uniqueScopeField" class="form-group{% if not form.unique_enabled %} hidden{% endif %}">
+            <label for="unique_scope">Escopo da unicidade</label>
+            <select id="unique_scope" name="unique_scope">
+                {% for scope in unique_scopes %}
+                <option value="{{ scope.value }}" {% if form.unique_scope == scope.value %}selected{% endif %}>{{ scope.label }}</option>
+                {% endfor %}
+            </select>
+            <span class="hint">Ex.: &quot;por dia&quot; = no máximo uma resposta por contato por dia calendário</span>
+        </div>
+
+        <div class="form-group">
+            <label class="checkbox-row">
+                <input type="checkbox" name="enabled" value="1" {% if form.enabled %}checked{% endif %}>
+                Trigger ativo
+            </label>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit">{% if is_edit %}Salvar alterações{% else %}Criar trigger{% endif %}</button>
+            <a class="btn btn-secondary" href="/triggers">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+function toggleTimeFields() {
+    const allDay = document.getElementById('all_day').checked;
+    document.getElementById('timeFields').classList.toggle('hidden', allDay);
+}
+
+function toggleUniqueScope() {
+    const unique = document.getElementById('unique_enabled').checked;
+    document.getElementById('uniqueScopeField').classList.toggle('hidden', !unique);
+}
+
+function testPattern() {
+    const pattern = document.getElementById('pattern').value;
+    const message = document.getElementById('testMessage').value;
+    const caseSensitive = document.querySelector('input[name="case_sensitive"]')?.checked || false;
+    const resultDiv = document.getElementById('testPatternResult');
+    resultDiv.style.display = 'block';
+    resultDiv.textContent = 'Testando...';
+
+    fetch('/triggers/test-match', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pattern, message, case_sensitive: caseSensitive }),
+    })
+        .then(async (response) => {
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.detail || JSON.stringify(data));
+            }
+            resultDiv.textContent = data.matches
+                ? '✅ Dispara — a mensagem satisfaz o padrão'
+                : '❌ Não dispara — a mensagem não satisfaz o padrão';
+        })
+        .catch((err) => {
+            resultDiv.textContent = 'Erro: ' + err.message;
+        });
+}
+</script>
+{% endblock %}

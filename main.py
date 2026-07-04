@@ -1,11 +1,12 @@
-from fastapi import FastAPI, Request, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, HTTPException, Query, Form, File, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional
+from typing import Optional, Literal, Annotated
 import asyncio
+import json
 import os
 import signal
 from decouple import Config, RepositoryEnv
@@ -24,6 +25,8 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from datasource import Mongo, AutoBoot, Chats, Whats, Messages
 from datasource import async_send_queue as async_queue
 from datasource import unread_pane_cache
+from datasource import triggers as triggers_store
+from datasource import trigger_matcher
 
 # Configuração de logging
 logging.basicConfig(level=logging.DEBUG)
@@ -57,6 +60,10 @@ app = FastAPI(
         {
             "name": "Webhook",
             "description": "URL única (POST /webhook/delivery): recebe todos os eventos de integração; use o campo event no JSON",
+        },
+        {
+            "name": "Triggers",
+            "description": "Gatilhos de autoatendimento (CRUD; execução automática em etapa futura)",
         },
     ]
 )
@@ -169,6 +176,194 @@ class SendQueueListResponse(BaseModel):
     page: int = Field(..., description="Página atual (1-based)")
     page_size: int = Field(..., description="Itens por página")
     total_pages: int = Field(..., description="Total de páginas")
+
+
+UniqueScope = Literal["minute", "hour", "day", "week", "month", "year", "forever"]
+
+
+class TriggerScheduleModel(BaseModel):
+    days_of_week: list[int] = Field(
+        default=[0, 1, 2, 3, 4, 5, 6],
+        description="0=segunda … 6=domingo",
+    )
+    all_day: bool = Field(True, description="Sem janela de horário")
+    time_start: str = Field("09:00", description="HH:MM (se all_day=false)")
+    time_end: str = Field("18:00", description="HH:MM (se all_day=false)")
+
+
+class TriggerUniqueModel(BaseModel):
+    enabled: bool = Field(False, description="Limitar repetições")
+    scope: UniqueScope = Field("day", description="Escopo da unicidade")
+
+
+class TriggerCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    pattern: str = Field(..., min_length=1, max_length=500)
+    case_sensitive: bool = False
+    reply_message: str = Field(..., min_length=1, max_length=800)
+    enabled: bool = True
+    schedule: TriggerScheduleModel = Field(default_factory=TriggerScheduleModel)
+    unique: TriggerUniqueModel = Field(default_factory=TriggerUniqueModel)
+
+
+class TriggerUpdateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    pattern: str = Field(..., min_length=1, max_length=500)
+    case_sensitive: bool = False
+    reply_message: str = Field(..., min_length=1, max_length=800)
+    enabled: bool = True
+    schedule: TriggerScheduleModel = Field(default_factory=TriggerScheduleModel)
+    unique: TriggerUniqueModel = Field(default_factory=TriggerUniqueModel)
+
+
+class TriggerResponse(BaseModel):
+    id: str
+    name: str
+    pattern: str
+    case_sensitive: bool
+    reply_message: str
+    enabled: bool
+    schedule: TriggerScheduleModel
+    unique: TriggerUniqueModel
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class TriggerListResponse(BaseModel):
+    success: bool = True
+    items: list[TriggerResponse]
+    total: int
+
+
+class TriggerEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class TriggerTestMatchRequest(BaseModel):
+    pattern: str = Field(..., max_length=500, description="Expressão: LIKE %, AND, OR, IN(a,b,c)")
+    message: str = Field(..., max_length=2000, description="Texto da mensagem recebida para testar")
+    case_sensitive: bool = False
+
+
+class TriggerTestMatchResponse(BaseModel):
+    matches: bool
+    pattern: str
+    message: str
+
+
+TRIGGER_DAY_OPTIONS = [
+    {"value": 0, "label": "Seg"},
+    {"value": 1, "label": "Ter"},
+    {"value": 2, "label": "Qua"},
+    {"value": 3, "label": "Qui"},
+    {"value": 4, "label": "Sex"},
+    {"value": 5, "label": "Sáb"},
+    {"value": 6, "label": "Dom"},
+]
+
+TRIGGER_UNIQUE_SCOPE_OPTIONS = [
+    {"value": "minute", "label": "No minuto"},
+    {"value": "hour", "label": "Na hora"},
+    {"value": "day", "label": "No dia"},
+    {"value": "week", "label": "Na semana"},
+    {"value": "month", "label": "No mês"},
+    {"value": "year", "label": "No ano"},
+    {"value": "forever", "label": "Eterna (só uma vez)"},
+]
+
+
+def _trigger_to_response(doc: dict) -> TriggerResponse:
+    return TriggerResponse(**doc)
+
+
+def _payload_from_trigger_body(body: TriggerCreateRequest | TriggerUpdateRequest) -> dict:
+    return {
+        "name": body.name,
+        "pattern": body.pattern,
+        "case_sensitive": body.case_sensitive,
+        "reply_message": body.reply_message,
+        "enabled": body.enabled,
+        "schedule": triggers_store.normalize_schedule(body.schedule.model_dump()),
+        "unique": triggers_store.normalize_unique(body.unique.model_dump()),
+    }
+
+
+def _form_to_trigger_payload(
+    name: str,
+    pattern: str,
+    reply_message: str,
+    case_sensitive: Optional[str],
+    days_of_week: list[str],
+    all_day: Optional[str],
+    time_start: str,
+    time_end: str,
+    unique_enabled: Optional[str],
+    unique_scope: str,
+    enabled: Optional[str],
+) -> dict:
+    days = [int(d) for d in days_of_week if str(d).isdigit()]
+    return {
+        "name": name,
+        "pattern": pattern,
+        "case_sensitive": case_sensitive is not None,
+        "reply_message": reply_message,
+        "enabled": enabled is not None,
+        "schedule": triggers_store.normalize_schedule(
+            {
+                "days_of_week": days,
+                "all_day": all_day is not None,
+                "time_start": time_start,
+                "time_end": time_end,
+            }
+        ),
+        "unique": triggers_store.normalize_unique(
+            {"enabled": unique_enabled is not None, "scope": unique_scope}
+        ),
+    }
+
+
+def _default_trigger_form() -> dict:
+    return {
+        "name": "",
+        "pattern": "",
+        "case_sensitive": False,
+        "reply_message": "",
+        "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+        "all_day": True,
+        "time_start": "09:00",
+        "time_end": "18:00",
+        "unique_enabled": False,
+        "unique_scope": "day",
+        "enabled": True,
+    }
+
+
+def _trigger_doc_to_form(doc: dict) -> dict:
+    schedule = doc.get("schedule") or {}
+    unique = doc.get("unique") or {}
+    return {
+        "name": doc.get("name", ""),
+        "pattern": doc.get("pattern", ""),
+        "case_sensitive": bool(doc.get("case_sensitive")),
+        "reply_message": doc.get("reply_message", ""),
+        "days_of_week": schedule.get("days_of_week") or [0, 1, 2, 3, 4, 5, 6],
+        "all_day": bool(schedule.get("all_day", True)),
+        "time_start": schedule.get("time_start", "09:00"),
+        "time_end": schedule.get("time_end", "18:00"),
+        "unique_enabled": bool(unique.get("enabled")),
+        "unique_scope": unique.get("scope", "day"),
+        "enabled": bool(doc.get("enabled", True)),
+    }
+
+
+def _enrich_trigger_rows(items: list[dict]) -> list[dict]:
+    rows = []
+    for item in items:
+        row = dict(item)
+        row["schedule_summary"] = triggers_store.format_schedule_summary(item.get("schedule") or {})
+        row["unique_summary"] = triggers_store.format_unique_summary(item.get("unique") or {})
+        rows.append(row)
+    return rows
 
 def iniciar_selenium():
     global navegador
@@ -395,6 +590,323 @@ def _run_unread_pane_cache_watcher():
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+# --- Triggers: telas HTML (rotas estáticas antes de /triggers/{id}) ---
+
+@app.get("/triggers", response_class=HTMLResponse, include_in_schema=False)
+async def triggers_list_page(
+    request: Request,
+    msg: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+):
+    items = _enrich_trigger_rows(triggers_store.list_triggers(mgd))
+    return templates.TemplateResponse(
+        "triggers_list.html",
+        {
+            "request": request,
+            "active_nav": "triggers",
+            "triggers": items,
+            "message": msg,
+            "error": error,
+        },
+    )
+
+
+@app.get("/triggers/new", response_class=HTMLResponse, include_in_schema=False)
+async def triggers_new_page(request: Request):
+    return templates.TemplateResponse(
+        "triggers_form.html",
+        {
+            "request": request,
+            "active_nav": "triggers",
+            "is_edit": False,
+            "trigger": None,
+            "form": _default_trigger_form(),
+            "day_options": TRIGGER_DAY_OPTIONS,
+            "unique_scopes": TRIGGER_UNIQUE_SCOPE_OPTIONS,
+            "error": None,
+        },
+    )
+
+
+@app.post("/triggers/new", response_class=HTMLResponse, include_in_schema=False)
+async def triggers_create_submit(
+    request: Request,
+    name: str = Form(...),
+    pattern: str = Form(...),
+    reply_message: str = Form(...),
+    case_sensitive: Optional[str] = Form(None),
+    days_of_week: Annotated[list[str], Form()] = [],
+    all_day: Optional[str] = Form(None),
+    time_start: str = Form("09:00"),
+    time_end: str = Form("18:00"),
+    unique_enabled: Optional[str] = Form(None),
+    unique_scope: str = Form("day"),
+    enabled: Optional[str] = Form(None),
+):
+    form_data = _form_to_trigger_payload(
+        name, pattern, reply_message, case_sensitive, days_of_week,
+        all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
+    )
+    try:
+        triggers_store.create_trigger(mgd, form_data)
+    except trigger_matcher.PatternSyntaxError as e:
+        error_msg = f"Padrão inválido: {e}"
+        status = 400
+    except Exception as e:
+        error_msg = f"Erro ao criar trigger: {e}"
+        status = 400
+    else:
+        return RedirectResponse(url="/triggers?msg=Trigger+cadastrado+com+sucesso", status_code=303)
+
+    return templates.TemplateResponse(
+        "triggers_form.html",
+        {
+            "request": request,
+            "active_nav": "triggers",
+            "is_edit": False,
+            "trigger": None,
+            "form": {
+                "name": name,
+                "pattern": pattern,
+                "case_sensitive": case_sensitive is not None,
+                "reply_message": reply_message,
+                "days_of_week": [int(d) for d in days_of_week if str(d).isdigit()],
+                "all_day": all_day is not None,
+                "time_start": time_start,
+                "time_end": time_end,
+                "unique_enabled": unique_enabled is not None,
+                "unique_scope": unique_scope,
+                "enabled": enabled is not None,
+            },
+            "day_options": TRIGGER_DAY_OPTIONS,
+            "unique_scopes": TRIGGER_UNIQUE_SCOPE_OPTIONS,
+            "error": error_msg,
+        },
+        status_code=status,
+    )
+
+
+@app.get("/triggers/export", include_in_schema=False)
+async def triggers_export_download():
+    payload = triggers_store.export_triggers(mgd)
+    filename = f"triggers-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    return JSONResponse(
+        content=payload,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/triggers/import", include_in_schema=False)
+async def triggers_import_upload(
+    file: UploadFile = File(...),
+    mode: str = Form("merge"),
+):
+    try:
+        raw = await file.read()
+        payload = json.loads(raw.decode("utf-8"))
+        result = triggers_store.import_triggers(mgd, payload, mode=mode)
+    except json.JSONDecodeError:
+        return RedirectResponse(
+            url="/triggers?error=Arquivo+JSON+inv%C3%A1lido",
+            status_code=303,
+        )
+    except ValueError as e:
+        return RedirectResponse(
+            url=f"/triggers?error={str(e).replace(' ', '+')}",
+            status_code=303,
+        )
+    except Exception as e:
+        return RedirectResponse(
+            url=f"/triggers?error=Erro+ao+importar%3A+{str(e).replace(' ', '+')}",
+            status_code=303,
+        )
+
+    msg = f"Importação concluída: {result['imported']} criado(s)"
+    if result["skipped"]:
+        msg += f", {result['skipped']} ignorado(s) (nome duplicado)"
+    if result["errors"]:
+        msg += f", {len(result['errors'])} erro(s)"
+    return RedirectResponse(url=f"/triggers?msg={msg.replace(' ', '+')}", status_code=303)
+
+
+@app.post("/triggers/test-match", tags=["Triggers"], response_model=TriggerTestMatchResponse)
+async def api_test_trigger_match(body: TriggerTestMatchRequest):
+    try:
+        matches = trigger_matcher.matches_pattern(body.message, body.pattern, body.case_sensitive)
+    except trigger_matcher.PatternSyntaxError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return TriggerTestMatchResponse(
+        matches=matches,
+        pattern=body.pattern,
+        message=body.message,
+    )
+
+
+@app.get("/triggers/{trigger_id}/edit", response_class=HTMLResponse, include_in_schema=False)
+async def triggers_edit_page(request: Request, trigger_id: str):
+    doc = triggers_store.get_trigger(mgd, trigger_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Trigger não encontrado")
+    return templates.TemplateResponse(
+        "triggers_form.html",
+        {
+            "request": request,
+            "active_nav": "triggers",
+            "is_edit": True,
+            "trigger": doc,
+            "form": _trigger_doc_to_form(doc),
+            "day_options": TRIGGER_DAY_OPTIONS,
+            "unique_scopes": TRIGGER_UNIQUE_SCOPE_OPTIONS,
+            "error": None,
+        },
+    )
+
+
+@app.post("/triggers/{trigger_id}/edit", response_class=HTMLResponse, include_in_schema=False)
+async def triggers_edit_submit(
+    request: Request,
+    trigger_id: str,
+    name: str = Form(...),
+    pattern: str = Form(...),
+    reply_message: str = Form(...),
+    case_sensitive: Optional[str] = Form(None),
+    days_of_week: Annotated[list[str], Form()] = [],
+    all_day: Optional[str] = Form(None),
+    time_start: str = Form("09:00"),
+    time_end: str = Form("18:00"),
+    unique_enabled: Optional[str] = Form(None),
+    unique_scope: str = Form("day"),
+    enabled: Optional[str] = Form(None),
+):
+    form_data = _form_to_trigger_payload(
+        name, pattern, reply_message, case_sensitive, days_of_week,
+        all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
+    )
+    try:
+        doc = triggers_store.update_trigger(mgd, trigger_id, form_data)
+    except trigger_matcher.PatternSyntaxError as e:
+        return templates.TemplateResponse(
+            "triggers_form.html",
+            {
+                "request": request,
+                "active_nav": "triggers",
+                "is_edit": True,
+                "trigger": {"id": trigger_id},
+                "form": {
+                    "name": name,
+                    "pattern": pattern,
+                    "case_sensitive": case_sensitive is not None,
+                    "reply_message": reply_message,
+                    "days_of_week": [int(d) for d in days_of_week if str(d).isdigit()],
+                    "all_day": all_day is not None,
+                    "time_start": time_start,
+                    "time_end": time_end,
+                    "unique_enabled": unique_enabled is not None,
+                    "unique_scope": unique_scope,
+                    "enabled": enabled is not None,
+                },
+                "day_options": TRIGGER_DAY_OPTIONS,
+                "unique_scopes": TRIGGER_UNIQUE_SCOPE_OPTIONS,
+                "error": f"Padrão inválido: {e}",
+            },
+            status_code=400,
+        )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Trigger não encontrado")
+    return RedirectResponse(url="/triggers?msg=Trigger+atualizado+com+sucesso", status_code=303)
+
+
+@app.post("/triggers/{trigger_id}/delete", include_in_schema=False)
+async def triggers_delete_submit(trigger_id: str):
+    if not triggers_store.delete_trigger(mgd, trigger_id):
+        raise HTTPException(status_code=404, detail="Trigger não encontrado")
+    return RedirectResponse(url="/triggers?msg=Trigger+exclu%C3%ADdo", status_code=303)
+
+
+# --- Triggers: API JSON (Swagger) ---
+
+@app.get("/triggers/all", tags=["Triggers"], response_model=TriggerListResponse)
+async def api_list_triggers(enabled_only: bool = Query(False)):
+    items = triggers_store.list_triggers(mgd, enabled_only=enabled_only)
+    return TriggerListResponse(
+        items=[_trigger_to_response(i) for i in items],
+        total=len(items),
+    )
+
+
+@app.get("/triggers/export/json", tags=["Triggers"])
+async def api_export_triggers():
+    return triggers_store.export_triggers(mgd)
+
+
+class TriggerImportRequest(BaseModel):
+    schema_version: int = 1
+    triggers: list[dict]
+
+
+class TriggerImportResponse(BaseModel):
+    success: bool
+    imported: int
+    skipped: int
+    total: int
+    errors: list[str]
+
+
+@app.post("/triggers/import/json", tags=["Triggers"], response_model=TriggerImportResponse)
+async def api_import_triggers(body: TriggerImportRequest, mode: str = Query("merge")):
+    try:
+        result = triggers_store.import_triggers(mgd, body.model_dump(), mode=mode)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return TriggerImportResponse(success=True, **result)
+
+
+@app.post("/triggers/create", tags=["Triggers"], response_model=TriggerResponse, status_code=201)
+async def api_create_trigger(body: TriggerCreateRequest):
+    try:
+        doc = triggers_store.create_trigger(mgd, _payload_from_trigger_body(body))
+    except trigger_matcher.PatternSyntaxError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _trigger_to_response(doc)
+
+
+@app.get("/triggers/{trigger_id}", tags=["Triggers"], response_model=TriggerResponse)
+async def api_get_trigger(trigger_id: str):
+    if trigger_id in triggers_store.RESERVED_TRIGGER_IDS:
+        raise HTTPException(status_code=404, detail="Trigger não encontrado")
+    doc = triggers_store.get_trigger(mgd, trigger_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Trigger não encontrado")
+    return _trigger_to_response(doc)
+
+
+@app.put("/triggers/{trigger_id}", tags=["Triggers"], response_model=TriggerResponse)
+async def api_update_trigger(trigger_id: str, body: TriggerUpdateRequest):
+    try:
+        doc = triggers_store.update_trigger(mgd, trigger_id, _payload_from_trigger_body(body))
+    except trigger_matcher.PatternSyntaxError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not doc:
+        raise HTTPException(status_code=404, detail="Trigger não encontrado")
+    return _trigger_to_response(doc)
+
+
+@app.delete("/triggers/{trigger_id}", tags=["Triggers"])
+async def api_delete_trigger(trigger_id: str):
+    if not triggers_store.delete_trigger(mgd, trigger_id):
+        raise HTTPException(status_code=404, detail="Trigger não encontrado")
+    return {"success": True, "message": "Trigger excluído"}
+
+
+@app.patch("/triggers/{trigger_id}/enabled", tags=["Triggers"], response_model=TriggerResponse)
+async def api_set_trigger_enabled(trigger_id: str, body: TriggerEnabledRequest):
+    doc = triggers_store.set_trigger_enabled(mgd, trigger_id, body.enabled)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Trigger não encontrado")
+    return _trigger_to_response(doc)
+
 
 @app.get("/status", tags=["Status"])
 async def get_status():
@@ -708,6 +1220,7 @@ async def restart_container():
 async def startup_event():
     global selenium_thread
     async_queue.ensure_queue_indexes(mgd)
+    triggers_store.ensure_indexes(mgd)
     async_queue.ensure_rabbit_topology()
     selenium_thread = threading.Thread(target=iniciar_selenium)
     selenium_thread.start()

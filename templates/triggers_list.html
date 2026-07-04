@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block title %}Triggers — WhatsApp Bot API{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <div>
+            <h1>Triggers</h1>
+            <p>Gatilhos de autoatendimento (execução automática em breve)</p>
+        </div>
+        <div class="header-actions">
+            <a class="btn btn-secondary" href="/triggers/export">Exportar JSON</a>
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('importFile').click()">Importar JSON</button>
+            <a class="btn" href="/triggers/new">+ Novo trigger</a>
+        </div>
+    </div>
+
+    <form id="importForm" method="post" action="/triggers/import" enctype="multipart/form-data" style="display:none;">
+        <input type="file" id="importFile" name="file" accept=".json,application/json" onchange="submitImport()">
+        <input type="hidden" name="mode" id="importMode" value="merge">
+    </form>
+
+    {% if message %}
+    <div class="alert alert-success">{{ message }}</div>
+    {% endif %}
+
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <div class="alert alert-info">
+        Nesta versão você pode criar, editar e excluir triggers. A execução automática será implementada em uma próxima etapa.
+    </div>
+
+    {% if triggers %}
+    <div class="trigger-table-wrap">
+        <table class="trigger-table">
+            <thead>
+                <tr>
+                    <th>Nome</th>
+                    <th>Padrão</th>
+                    <th>Horário</th>
+                    <th>Única</th>
+                    <th>Status</th>
+                    <th>Ações</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in triggers %}
+                <tr>
+                    <td>
+                        <strong>{{ t.name }}</strong>
+                    </td>
+                    <td><code>{{ t.pattern }}</code>{% if t.case_sensitive %} <small>(Aa)</small>{% endif %}</td>
+                    <td>{{ t.schedule_summary }}</td>
+                    <td>{{ t.unique_summary }}</td>
+                    <td>
+                        {% if t.enabled %}
+                        <span class="badge badge-on">Ativo</span>
+                        {% else %}
+                        <span class="badge badge-off">Inativo</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="actions">
+                            <a class="btn btn-secondary btn-sm" href="/triggers/{{ t.id }}/edit">Editar</a>
+                            <form class="inline-form" method="post" action="/triggers/{{ t.id }}/delete" onsubmit="return confirm('Excluir o trigger &quot;{{ t.name }}&quot;?');">
+                                <button type="submit" class="btn-danger btn-sm">Excluir</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>Nenhum trigger cadastrado ainda.</p>
+        <a class="btn" href="/triggers/new">Criar primeiro trigger</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+function submitImport() {
+    const input = document.getElementById('importFile');
+    if (!input.files || !input.files.length) return;
+
+    const replace = confirm(
+        'OK = mesclar (ignora nomes duplicados)\n' +
+        'Cancelar = substituir todos os triggers existentes pelo arquivo'
+    );
+    document.getElementById('importMode').value = replace ? 'merge' : 'replace';
+    if (!replace) {
+        if (!confirm('Isso apagará TODOS os triggers atuais antes de importar. Continuar?')) {
+            input.value = '';
+            return;
+        }
+    }
+    document.getElementById('importForm').submit();
+}
+</script>
+{% endblock %}
