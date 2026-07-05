@@ -7,7 +7,7 @@
     <div class="page-header">
         <div>
             <h1>Triggers</h1>
-            <p>Gatilhos de autoatendimento (execução automática em breve)</p>
+            <p>Gatilhos de autoatendimento — disparam ao detectar mensagem na lista de não lidas</p>
         </div>
         <div class="header-actions">
             <a class="btn btn-secondary" href="/triggers/export">Exportar JSON</a>
@@ -30,7 +30,7 @@
     {% endif %}
 
     <div class="alert alert-info">
-        Nesta versão você pode criar, editar e excluir triggers. A execução automática será implementada em uma próxima etapa.
+        Triggers ativos são avaliados quando a lista de não lidas muda. Respostas entram na fila assíncrona de envio.
     </div>
 
     {% if triggers %}

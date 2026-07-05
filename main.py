@@ -26,6 +26,8 @@ from datasource import Mongo, AutoBoot, Chats, Whats, Messages
 from datasource import async_send_queue as async_queue
 from datasource import unread_pane_cache
 from datasource import triggers as triggers_store
+from datasource import trigger_engine
+from datasource.app_timezone import get_timezone_name, now_local
 from datasource import trigger_matcher
 
 # Configuração de logging
@@ -555,12 +557,14 @@ def _run_unread_pane_cache_watcher():
             logged = False
         if not logged:
             unread_pane_cache.clear_cache()
+            trigger_engine.reset_baseline()
             time.sleep(interval)
             continue
         if not whatsapp_send_lock.acquire(blocking=False):
             time.sleep(interval)
             continue
         try:
+            old_chats, _ = unread_pane_cache.get_snapshot()
             raw = chats_runner.getUnreadChatsFromPaneSide(nav, limit=max_chats)
             if not isinstance(raw, list):
                 time.sleep(interval)
@@ -580,6 +584,12 @@ def _run_unread_pane_cache_watcher():
                             "total": len(raw),
                         },
                     )
+                try:
+                    stats = trigger_engine.process_unread_changes(mgd, old_chats, raw)
+                    if stats.get("queued"):
+                        logging.info("Triggers: %s", stats)
+                except Exception:
+                    logging.exception("Erro no motor de triggers")
         except Exception:
             logging.exception("Erro no watcher de cache #pane-side (não lidas)")
         finally:
@@ -939,6 +949,20 @@ async def get_profile():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao obter perfil: {str(e)}")
 
+@app.get("/system/timezone", tags=["Sistema"])
+async def system_timezone():
+    """Hora local do container — mesma referência usada pelos triggers (faixa de horário, unique por dia)."""
+    local = now_local()
+    return {
+        "timezone": get_timezone_name(),
+        "local_now": local.isoformat(),
+        "utc_offset": local.strftime("%z"),
+        "weekday": local.weekday(),
+        "weekday_label": ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"][local.weekday()],
+        "hint": "Defina TZ=America/Sao_Paulo no .env e reinicie o compose.",
+    }
+
+
 @app.get("/screenshot", tags=["Sistema"])
 async def get_screenshot():
     navegador_local = obter_navegador()
@@ -1222,6 +1246,11 @@ async def startup_event():
     async_queue.ensure_queue_indexes(mgd)
     triggers_store.ensure_indexes(mgd)
     async_queue.ensure_rabbit_topology()
+    logging.info(
+        "Fuso horário da aplicação: %s | agora local: %s",
+        get_timezone_name(),
+        now_local().isoformat(),
+    )
     selenium_thread = threading.Thread(target=iniciar_selenium)
     selenium_thread.start()
     worker = threading.Thread(target=_run_message_queue_worker, name="wa-async-queue", daemon=True)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Optional
@@ -9,10 +10,12 @@ from typing import Any, Optional
 import pymongo
 
 from datasource import trigger_matcher
+from datasource.app_timezone import now_local
 
 logger = logging.getLogger(__name__)
 
 TRIGGERS_COLLECTION = "wa_triggers"
+EXECUTIONS_COLLECTION = "wa_trigger_executions"
 EXPORT_SCHEMA_VERSION = 1
 
 UNIQUE_SCOPES = ("minute", "hour", "day", "week", "month", "year", "forever")
@@ -22,6 +25,10 @@ RESERVED_TRIGGER_IDS = frozenset({"new", "all", "create", "export", "import"})
 
 def _coll(mgd) -> Any:
     return mgd.db[TRIGGERS_COLLECTION]
+
+
+def _exec_coll(mgd) -> Any:
+    return mgd.db[EXECUTIONS_COLLECTION]
 
 
 def _iso_utc(dt: Optional[datetime]) -> Optional[str]:
@@ -47,6 +54,11 @@ def ensure_indexes(mgd) -> None:
         coll.create_index("trigger_id", unique=True)
         coll.create_index([("enabled", pymongo.ASCENDING), ("name", pymongo.ASCENDING)])
         coll.create_index("name")
+        exec_coll = _exec_coll(mgd)
+        exec_coll.create_index(
+            [("trigger_id", pymongo.ASCENDING), ("contact_key", pymongo.ASCENDING), ("scope_key", pymongo.ASCENDING)],
+            unique=True,
+        )
     except Exception as e:
         logger.debug("Índices de triggers (pode ser idempotente): %s", e)
 
@@ -189,6 +201,87 @@ def message_matches_trigger(message: str, trigger: dict) -> bool:
         message,
         trigger.get("pattern", ""),
         bool(trigger.get("case_sensitive")),
+    )
+
+
+def contact_key(phone: str, name: Optional[str] = None) -> str:
+    digits = re.sub(r"\D", "", str(phone or ""))
+    if digits:
+        return digits
+    return f"name:{(name or '').strip()}"
+
+
+def is_within_schedule(schedule: dict, now: datetime) -> bool:
+    weekday = now.weekday()
+    days = schedule.get("days_of_week") or list(range(7))
+    if weekday not in days:
+        return False
+    if schedule.get("all_day", True):
+        return True
+    start = str(schedule.get("time_start") or "09:00")[:5]
+    end = str(schedule.get("time_end") or "18:00")[:5]
+    current = now.strftime("%H:%M")
+    if start <= end:
+        return start <= current <= end
+    return current >= start or current <= end
+
+
+def unique_scope_key(scope: str, now: datetime) -> str:
+    scope = (scope or "day").lower()
+    if scope == "minute":
+        return now.strftime("%Y-%m-%dT%H:%M")
+    if scope == "hour":
+        return now.strftime("%Y-%m-%dT%H")
+    if scope == "day":
+        return now.strftime("%Y-%m-%d")
+    if scope == "week":
+        return now.strftime("%Y-W%W")
+    if scope == "month":
+        return now.strftime("%Y-%m")
+    if scope == "year":
+        return now.strftime("%Y")
+    if scope == "forever":
+        return "forever"
+    return now.strftime("%Y-%m-%d")
+
+
+def try_claim_execution(
+    mgd,
+    trigger_id: str,
+    contact_key: str,
+    unique: dict,
+    now: datetime,
+) -> bool:
+    """Reserva execução (unique). Retorna True se pode disparar."""
+    if not unique.get("enabled"):
+        return True
+    scope_key = unique_scope_key(str(unique.get("scope") or "day"), now)
+    doc = {
+        "trigger_id": trigger_id,
+        "contact_key": contact_key,
+        "scope_key": scope_key,
+        "executed_at": now if now.tzinfo else now_local(),
+    }
+    try:
+        _exec_coll(mgd).insert_one(doc)
+        return True
+    except pymongo.errors.DuplicateKeyError:
+        return False
+
+
+def release_execution_claim(
+    mgd,
+    trigger_id: str,
+    contact_key: str,
+    unique: dict,
+    now: datetime,
+) -> None:
+    """Remove claim se enfileiramento falhou após insert."""
+    if not unique.get("enabled"):
+        return
+    scope_key = unique_scope_key(str(unique.get("scope") or "day"), now)
+    _exec_coll(mgd).delete_one(
+        {"trigger_id": trigger_id, "contact_key": contact_key, "scope_key": scope_key}
     )
 
 

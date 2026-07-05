@@ -1,6 +1,7 @@
 FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Sao_Paulo
 
 # Instalar dependências do sistema
 RUN apt-get update && apt-get install -y \
