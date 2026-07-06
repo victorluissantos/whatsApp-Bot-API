@@ -103,7 +103,8 @@ _prev_logged_in_for_unread_filter = False
 class SendMessageRequest(BaseModel):
     phone: str = Field(..., max_length=22, description="Número de telefone")
     message: str = Field(..., max_length=800, description="Texto da mensagem")
-    unic_sent: bool = Field(False, description="Evita envio duplicado para o mesmo número")  # Novo nome
+    unic_sent: bool = Field(False, description="Evita envio duplicado para o mesmo número")
+    unRead: bool = Field(False, description="Marca o chat como não lido após o envio (Ctrl+Alt+Shift+U)")
 
 class ChatInfo(BaseModel):
     name: str = Field(..., description="Nome do contato")
@@ -164,6 +165,7 @@ class SendQueueJobItem(BaseModel):
     phone: str = Field(..., description="Telefone de destino")
     message: str = Field(..., description="Texto enfileirado")
     unic_sent: bool = Field(False, description="Flag unic_sent no envio")
+    unRead: bool = Field(False, description="Marca o chat como não lido após o envio")
     status: str = Field(..., description="pending | processing | sent | failed")
     created_at: Optional[str] = Field(None, description="UTC ISO quando entrou na fila")
     started_at: Optional[str] = Field(None, description="UTC ISO quando o worker começou")
@@ -438,6 +440,7 @@ def _run_message_queue_worker():
             phone = str(job.get("phone", "")).strip()
             message = str(job.get("message", ""))
             unic_sent = bool(job.get("unic_sent", False))
+            unRead = bool(job.get("unRead", False))
             if not job_id or not phone or not message:
                 async_queue.ack_rabbit_job(delivery_tag)
                 logging.warning("Job inválido recebido do RabbitMQ: %s", job)
@@ -445,7 +448,7 @@ def _run_message_queue_worker():
             try:
                 async_queue.mark_job_processing(mgd, job_id)
                 w = AutoBoot.WhatsAppBot(navegador_local, mgd)
-                result = w.syncSendText(phone, message, unic_sent=unic_sent)
+                result = w.syncSendText(phone, message, unic_sent=unic_sent, unRead=unRead)
                 ok = result == "Enviado"
                 async_queue.finalize_job(mgd, job_id, ok, result)
                 hook = async_queue.get_delivery_webhook_url(mgd)
@@ -996,7 +999,9 @@ async def send_message(request: SendMessageRequest):
     try:
         with whatsapp_send_lock:
             w = AutoBoot.WhatsAppBot(navegador_local, mgd)
-            result = w.syncSendText(request.phone, request.message, unic_sent=request.unic_sent)
+            result = w.syncSendText(
+                request.phone, request.message, unic_sent=request.unic_sent, unRead=request.unRead
+            )
         if result == 'Enviado':
             return {"success": True, "phone": request.phone, "message": "Mensagem enviada com sucesso"}
         else:
@@ -1005,7 +1010,7 @@ async def send_message(request: SendMessageRequest):
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
 @app.get("/sendMessage", tags=["Mensagens"])
-async def send_message_get(phone: str, message: str, unic_sent: bool = False):
+async def send_message_get(phone: str, message: str, unic_sent: bool = False, unRead: bool = False):
     if not phone or not message or len(phone) > 22 or len(message) > 800:
         raise HTTPException(status_code=400, detail="Parâmetros inválidos")
     navegador_local = obter_navegador()
@@ -1017,7 +1022,7 @@ async def send_message_get(phone: str, message: str, unic_sent: bool = False):
     try:
         with whatsapp_send_lock:
             w = AutoBoot.WhatsAppBot(navegador_local, mgd)
-            result = w.syncSendText(phone, message, unic_sent=unic_sent)
+            result = w.syncSendText(phone, message, unic_sent=unic_sent, unRead=unRead)
         if result == 'Enviado':
             return {"success": True, "phone": phone, "message": "Mensagem enviada com sucesso"}
         else:
@@ -1060,7 +1065,9 @@ async def send_message_async(request: SendMessageRequest):
     hook = async_queue.get_delivery_webhook_url(mgd)
     webhook_ok = bool(hook)
     try:
-        job_id = async_queue.enqueue_job(mgd, request.phone, request.message, request.unic_sent)
+        job_id = async_queue.enqueue_job(
+            mgd, request.phone, request.message, request.unic_sent, request.unRead
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Falha ao enfileirar mensagem no RabbitMQ: {str(e)}")
 

@@ -71,7 +71,7 @@ def _publish_to_rabbit(payload: dict) -> None:
     )
 
 
-def enqueue_job(mgd, phone: str, message: str, unic_sent: bool) -> str:
+def enqueue_job(mgd, phone: str, message: str, unic_sent: bool, unRead: bool = False) -> str:
     job_id = str(uuid.uuid4())
     _queue(mgd).insert_one(
         {
@@ -79,6 +79,7 @@ def enqueue_job(mgd, phone: str, message: str, unic_sent: bool) -> str:
             "phone": phone,
             "message": message,
             "unic_sent": bool(unic_sent),
+            "unRead": bool(unRead),
             "status": "pending",
             "created_at": datetime.utcnow(),
         }
@@ -90,6 +91,7 @@ def enqueue_job(mgd, phone: str, message: str, unic_sent: bool) -> str:
                 "phone": phone,
                 "message": message,
                 "unic_sent": bool(unic_sent),
+                "unRead": bool(unRead),
                 "created_at": datetime.utcnow().isoformat() + "Z",
             }
         )

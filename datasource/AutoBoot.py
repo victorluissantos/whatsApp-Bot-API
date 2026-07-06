@@ -19,7 +19,7 @@ class WhatsAppBot:
 		self.mongo = mongo
 
 
-	def syncSendText(self, telefone, message, unic_sent=False):
+	def syncSendText(self, telefone, message, unic_sent=False, unRead=False):
 		print("[SYNC_SENDTEXT_V2] Iniciando fluxo por URL")
 
 		telefone = ''.join(filter(str.isdigit, str(telefone)))
@@ -137,6 +137,16 @@ class WhatsAppBot:
 			inputField.send_keys(Keys.RETURN)
 			print(f"[DEPURACAO] Mensagem enviada")
 			print(f"[TEMPO] Após enviar mensagem: {time.time() - start:.2f}s")
+
+			if unRead:
+				time.sleep(0.2)
+				try:
+					ActionChains(self.navegador).key_down(Keys.CONTROL).key_down(Keys.ALT).key_down(
+						Keys.SHIFT
+					).send_keys("u").key_up(Keys.SHIFT).key_up(Keys.ALT).key_up(Keys.CONTROL).perform()
+					print("[DEPURACAO] Chat marcado como não lido (Ctrl+Alt+Shift+U)")
+				except Exception as unread_err:
+					print(f"[DEPURACAO] Falha ao marcar como não lido: {unread_err}")
 			# Captura screenshot após o envio
 			# try:
 				# screenshot_path = 'static/tmp/after_send.png'

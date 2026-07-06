@@ -124,6 +124,7 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict]) ->
                     phone,
                     trigger["reply_message"],
                     unic_sent=False,
+                    unRead=True,
                 )
                 logger.info(
                     "Trigger %r disparado para %s (job %s) msg=%r",
