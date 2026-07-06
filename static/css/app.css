@@ -20,7 +20,7 @@ body {
 }
 
 .nav-inner {
-    max-width: 960px;
+    max-width: 1280px;
     margin: 0 auto;
     padding: 0 20px;
     display: flex;
@@ -78,15 +78,19 @@ body {
 }
 
 .nav-toast {
-    max-width: 960px;
+    max-width: 1280px;
     margin: 12px auto 0;
     padding: 0 20px;
 }
 
 .page-wrap {
-    max-width: 960px;
+    max-width: 1280px;
     margin: 0 auto;
     padding: 20px;
+}
+
+.page-wrap .container-wide {
+    max-width: none;
 }
 
 .container {
@@ -243,6 +247,115 @@ button.btn-sm,
 .badge-off {
     background: #f8d7da;
     color: #721c24;
+}
+
+.badge-status {
+    text-transform: capitalize;
+}
+
+.badge-pending {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.badge-processing {
+    background: #cce5ff;
+    color: #004085;
+}
+
+.badge-sent {
+    background: #d4edda;
+    color: #155724;
+}
+
+.badge-failed {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.badge-cancelled {
+    background: #e2e3e5;
+    color: #383d41;
+}
+
+.filter-form {
+    margin-bottom: 24px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #eee;
+}
+
+.filter-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px 16px;
+}
+
+.filter-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.filter-form .form-group {
+    margin-bottom: 0;
+}
+
+.queue-total {
+    font-size: 14px;
+    color: #666;
+    font-weight: bold;
+}
+
+.queue-table .message-cell {
+    max-width: 320px;
+}
+
+.queue-table .message-cell summary {
+    cursor: pointer;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.message-full {
+    margin: 8px 0 0;
+    padding: 10px;
+    background: #f8f9fa;
+    border-radius: 5px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+    font-family: inherit;
+}
+
+.result-cell {
+    max-width: 180px;
+    word-break: break-word;
+    font-size: 13px;
+}
+
+.nowrap {
+    white-space: nowrap;
+}
+
+.muted {
+    color: #888;
+}
+
+.pagination {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid #eee;
+}
+
+.pagination-info {
+    font-size: 14px;
+    color: #666;
+    padding: 0 8px;
 }
 
 .actions {

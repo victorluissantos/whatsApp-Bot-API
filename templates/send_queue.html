@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+
+{% block title %}Fila de envio — WhatsApp Bot API{% endblock %}
+
+{% block content %}
+<div class="container container-wide">
+    <div class="page-header">
+        <div>
+            <h1>Fila de envio</h1>
+            <p>Mensagens enfileiradas para envio assíncrono via RabbitMQ</p>
+        </div>
+        <div class="header-actions">
+            <span class="queue-total">{{ total }} registro(s)</span>
+        </div>
+    </div>
+
+    {% if message %}
+    <div class="alert alert-success">{{ message }}</div>
+    {% endif %}
+
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <form class="filter-form" method="get" action="/send-queue">
+        <div class="filter-grid">
+            <div class="form-group">
+                <label for="phone">Telefone</label>
+                <input type="text" id="phone" name="phone" value="{{ filters.phone }}" placeholder="Ex.: 55419">
+            </div>
+            <div class="form-group">
+                <label for="message">Mensagem</label>
+                <input type="text" id="message" name="message" value="{{ filters.message }}" placeholder="Trecho do texto">
+            </div>
+            <div class="form-group">
+                <label for="status">Status</label>
+                <select id="status" name="status">
+                    <option value="" {% if not filters.status %}selected{% endif %}>Todos</option>
+                    <option value="pending" {% if filters.status == 'pending' %}selected{% endif %}>Pendente</option>
+                    <option value="processing" {% if filters.status == 'processing' %}selected{% endif %}>Processando</option>
+                    <option value="sent" {% if filters.status == 'sent' %}selected{% endif %}>Enviado</option>
+                    <option value="failed" {% if filters.status == 'failed' %}selected{% endif %}>Falhou</option>
+                    <option value="cancelled" {% if filters.status == 'cancelled' %}selected{% endif %}>Cancelado</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="date_from">De</label>
+                <input type="date" id="date_from" name="date_from" value="{{ filters.date_from }}">
+            </div>
+            <div class="form-group">
+                <label for="date_to">Até</label>
+                <input type="date" id="date_to" name="date_to" value="{{ filters.date_to }}">
+            </div>
+            <div class="form-group">
+                <label for="page_size">Por página</label>
+                <select id="page_size" name="page_size">
+                    {% for n in [10, 20, 50, 100] %}
+                    <option value="{{ n }}" {% if filters.page_size == n %}selected{% endif %}>{{ n }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <div class="filter-actions">
+            <button type="submit" class="btn">Filtrar</button>
+            <a class="btn btn-secondary" href="/send-queue">Limpar</a>
+        </div>
+    </form>
+
+    {% if items %}
+    <div class="trigger-table-wrap">
+        <table class="trigger-table queue-table">
+            <thead>
+                <tr>
+                    <th>Criado em</th>
+                    <th>Telefone</th>
+                    <th>Mensagem</th>
+                    <th>Status</th>
+                    <th>Resultado</th>
+                    <th>Ações</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                <tr>
+                    <td class="nowrap">
+                        <small>{{ item.created_at or '—' }}</small>
+                        {% if item.started_at %}
+                        <br><small class="muted">Início: {{ item.started_at }}</small>
+                        {% endif %}
+                        {% if item.processed_at %}
+                        <br><small class="muted">Fim: {{ item.processed_at }}</small>
+                        {% endif %}
+                    </td>
+                    <td><code>{{ item.phone }}</code></td>
+                    <td class="message-cell">
+                        <details>
+                            <summary>{{ item.message[:120] }}{% if item.message|length > 120 %}…{% endif %}</summary>
+                            <pre class="message-full">{{ item.message }}</pre>
+                        </details>
+                    </td>
+                    <td>
+                        <span class="badge badge-status badge-{{ item.status }}">{{ item.status }}</span>
+                        {% if item.unic_sent %}<br><small class="muted">unic_sent</small>{% endif %}
+                        {% if item.unRead %}<br><small class="muted">unRead</small>{% endif %}
+                    </td>
+                    <td class="result-cell">{{ item.result or '—' }}</td>
+                    <td>
+                        {% if item.status == 'pending' %}
+                        <form class="inline-form" method="post" action="/send-queue/{{ item.job_id }}/cancel" onsubmit="return confirm('Cancelar o envio desta mensagem?');">
+                            <input type="hidden" name="page" value="{{ page }}">
+                            <input type="hidden" name="page_size" value="{{ page_size }}">
+                            <input type="hidden" name="phone" value="{{ filters.phone }}">
+                            <input type="hidden" name="message" value="{{ filters.message }}">
+                            <input type="hidden" name="status" value="{{ filters.status }}">
+                            <input type="hidden" name="date_from" value="{{ filters.date_from }}">
+                            <input type="hidden" name="date_to" value="{{ filters.date_to }}">
+                            <button type="submit" class="btn-danger btn-sm">Cancelar envio</button>
+                        </form>
+                        {% else %}
+                        <small class="muted">{{ item.job_id[:8] }}…</small>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if total_pages > 1 %}
+    <nav class="pagination" aria-label="Paginação">
+        {% set qs = 'page_size=' ~ page_size %}
+        {% if filters.phone %}{% set qs = qs ~ '&phone=' ~ filters.phone %}{% endif %}
+        {% if filters.message %}{% set qs = qs ~ '&message=' ~ filters.message %}{% endif %}
+        {% if filters.status %}{% set qs = qs ~ '&status=' ~ filters.status %}{% endif %}
+        {% if filters.date_from %}{% set qs = qs ~ '&date_from=' ~ filters.date_from %}{% endif %}
+        {% if filters.date_to %}{% set qs = qs ~ '&date_to=' ~ filters.date_to %}{% endif %}
+
+        {% if page > 1 %}
+        <a class="btn btn-secondary btn-sm" href="/send-queue?page=1&{{ qs }}">« Primeira</a>
+        <a class="btn btn-secondary btn-sm" href="/send-queue?page={{ page - 1 }}&{{ qs }}">‹ Anterior</a>
+        {% endif %}
+
+        <span class="pagination-info">Página {{ page }} de {{ total_pages }}</span>
+
+        {% if page < total_pages %}
+        <a class="btn btn-secondary btn-sm" href="/send-queue?page={{ page + 1 }}&{{ qs }}">Próxima ›</a>
+        <a class="btn btn-secondary btn-sm" href="/send-queue?page={{ total_pages }}&{{ qs }}">Última »</a>
+        {% endif %}
+    </nav>
+    {% endif %}
+
+    {% else %}
+    <div class="empty-state">
+        <p>Nenhum job encontrado com os filtros atuais.</p>
+        <a class="btn btn-secondary" href="/send-queue">Limpar filtros</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import uuid
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from typing import Any, Optional
 
 import pika
@@ -129,11 +130,43 @@ def nack_rabbit_job(delivery_tag: int, requeue: bool = True) -> None:
     channel.basic_nack(delivery_tag=delivery_tag, requeue=requeue)
 
 
-def mark_job_processing(mgd, job_id: str) -> None:
-    _queue(mgd).update_one(
-        {"job_id": job_id},
+def get_job_status(mgd, job_id: str) -> Optional[str]:
+    doc = _queue(mgd).find_one({"job_id": job_id}, {"status": 1})
+    if not doc:
+        return None
+    return str(doc.get("status", ""))
+
+
+def mark_job_processing(mgd, job_id: str) -> bool:
+    """Só passa de pending → processing; retorna False se já cancelado ou finalizado."""
+    result = _queue(mgd).update_one(
+        {"job_id": job_id, "status": "pending"},
         {"$set": {"status": "processing", "started_at": datetime.utcnow()}},
     )
+    return result.modified_count > 0
+
+
+def cancel_job(mgd, job_id: str) -> tuple[bool, str]:
+    """Cancela job ainda pendente (não será enviado quando o worker consumir a fila)."""
+    doc = _queue(mgd).find_one_and_update(
+        {"job_id": job_id, "status": "pending"},
+        {
+            "$set": {
+                "status": "cancelled",
+                "result": "Cancelado pelo usuário",
+                "processed_at": datetime.utcnow(),
+            }
+        },
+    )
+    if doc:
+        return True, "Job cancelado com sucesso"
+    existing = _queue(mgd).find_one({"job_id": job_id})
+    if not existing:
+        return False, "Job não encontrado"
+    current = existing.get("status", "")
+    if current == "cancelled":
+        return True, "Job já estava cancelado"
+    return False, f"Não é possível cancelar job com status '{current}'"
 
 
 def finalize_job(mgd, job_id: str, success: bool, result: str) -> None:
@@ -185,6 +218,7 @@ def ensure_queue_indexes(mgd) -> None:
         _queue(mgd).create_index([("status", pymongo.ASCENDING), ("created_at", pymongo.ASCENDING)])
         _queue(mgd).create_index([("created_at", pymongo.DESCENDING)])
         _queue(mgd).create_index("job_id", unique=True)
+        _queue(mgd).create_index("phone")
     except Exception as e:
         logger.debug("Índices da fila (pode ser idempotente): %s", e)
 
@@ -205,15 +239,79 @@ def _iso_utc(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() + "Z"
 
 
-def list_queue_jobs_desc(mgd, page: int, page_size: int) -> tuple[list[dict], int]:
-    """Lista jobs da fila, mais recentes primeiro (created_at DESC), com paginação."""
+def _parse_filter_datetime(value: str, end_of_day: bool = False) -> Optional[datetime]:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+            year, month, day = (int(part) for part in raw.split("-"))
+            if end_of_day:
+                return datetime.combine(year, month, day, dt_time(23, 59, 59, 999999))
+            return datetime.combine(year, month, day, dt_time.min)
+        normalized = raw.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if getattr(dt, "tzinfo", None) is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+def build_queue_filter(
+    phone: Optional[str] = None,
+    message: Optional[str] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> dict:
+    query: dict[str, Any] = {}
+    phone_q = (phone or "").strip()
+    if phone_q:
+        query["phone"] = {"$regex": re.escape(phone_q)}
+    message_q = (message or "").strip()
+    if message_q:
+        query["message"] = {"$regex": re.escape(message_q), "$options": "i"}
+    status_q = (status or "").strip()
+    if status_q:
+        query["status"] = status_q
+    created_range: dict[str, datetime] = {}
+    dt_from = _parse_filter_datetime(date_from or "", end_of_day=False)
+    dt_to = _parse_filter_datetime(date_to or "", end_of_day=True)
+    if dt_from:
+        created_range["$gte"] = dt_from
+    if dt_to:
+        created_range["$lte"] = dt_to
+    if created_range:
+        query["created_at"] = created_range
+    return query
+
+
+def list_queue_jobs_desc(
+    mgd,
+    page: int,
+    page_size: int,
+    phone: Optional[str] = None,
+    message: Optional[str] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> tuple[list[dict], int]:
+    """Lista jobs da fila, mais recentes primeiro (created_at DESC), com paginação e filtros."""
     coll = _queue(mgd)
-    total = coll.count_documents({})
+    query = build_queue_filter(
+        phone=phone,
+        message=message,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    total = coll.count_documents(query)
     page = max(1, page)
     page_size = max(1, page_size)
     skip = (page - 1) * page_size
     cursor = (
-        coll.find()
+        coll.find(query)
         .sort("created_at", pymongo.DESCENDING)
         .skip(skip)
         .limit(page_size)

@@ -16,6 +16,7 @@ import threading
 import logging
 import time
 import base64
+from urllib.parse import urlencode
 from io import BytesIO
 from PIL import Image
 from selenium.webdriver.support.ui import WebDriverWait
@@ -166,7 +167,7 @@ class SendQueueJobItem(BaseModel):
     message: str = Field(..., description="Texto enfileirado")
     unic_sent: bool = Field(False, description="Flag unic_sent no envio")
     unRead: bool = Field(False, description="Marca o chat como não lido após o envio")
-    status: str = Field(..., description="pending | processing | sent | failed")
+    status: str = Field(..., description="pending | processing | sent | failed | cancelled")
     created_at: Optional[str] = Field(None, description="UTC ISO quando entrou na fila")
     started_at: Optional[str] = Field(None, description="UTC ISO quando o worker começou")
     processed_at: Optional[str] = Field(None, description="UTC ISO quando finalizou")
@@ -446,7 +447,15 @@ def _run_message_queue_worker():
                 logging.warning("Job inválido recebido do RabbitMQ: %s", job)
                 continue
             try:
-                async_queue.mark_job_processing(mgd, job_id)
+                if not async_queue.mark_job_processing(mgd, job_id):
+                    current = async_queue.get_job_status(mgd, job_id)
+                    logging.info(
+                        "Job %s ignorado na fila (status=%s); removendo do RabbitMQ",
+                        job_id,
+                        current,
+                    )
+                    async_queue.ack_rabbit_job(delivery_tag)
+                    continue
                 w = AutoBoot.WhatsAppBot(navegador_local, mgd)
                 result = w.syncSendText(phone, message, unic_sent=unic_sent, unRead=unRead)
                 ok = result == "Enviado"
@@ -1089,15 +1098,108 @@ async def send_message_async(request: SendMessageRequest):
     )
 
 
+@app.get("/send-queue", response_class=HTMLResponse, include_in_schema=False)
+async def send_queue_page(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    phone: Optional[str] = Query(None),
+    message: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    msg: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+):
+    raw, total = async_queue.list_queue_jobs_desc(
+        mgd,
+        page,
+        page_size,
+        phone=phone,
+        message=message,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    filters = {
+        "phone": phone or "",
+        "message": message or "",
+        "status": status or "",
+        "date_from": date_from or "",
+        "date_to": date_to or "",
+        "page_size": page_size,
+    }
+    return templates.TemplateResponse(
+        "send_queue.html",
+        {
+            "request": request,
+            "active_nav": "send_queue",
+            "items": raw,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "filters": filters,
+            "message": msg,
+            "error": error,
+        },
+    )
+
+
+@app.post("/send-queue/{job_id}/cancel", include_in_schema=False)
+async def send_queue_cancel_form(
+    job_id: str,
+    page: int = Form(1),
+    page_size: int = Form(20),
+    phone: str = Form(""),
+    message: str = Form(""),
+    status: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+):
+    ok, detail = async_queue.cancel_job(mgd, job_id)
+    params: dict[str, str | int] = {
+        "page": max(1, page),
+        "page_size": max(1, min(100, page_size)),
+    }
+    if phone.strip():
+        params["phone"] = phone.strip()
+    if message.strip():
+        params["message"] = message.strip()
+    if status.strip():
+        params["status"] = status.strip()
+    if date_from.strip():
+        params["date_from"] = date_from.strip()
+    if date_to.strip():
+        params["date_to"] = date_to.strip()
+    params["msg" if ok else "error"] = detail
+    return RedirectResponse(url=f"/send-queue?{urlencode(params)}", status_code=303)
+
+
 @app.get("/getSendQueue", tags=["Mensagens"], response_model=SendQueueListResponse)
 async def get_send_queue(
     page: int = Query(1, ge=1, description="Página (começa em 1)"),
     page_size: int = Query(10, ge=1, le=100, description="Itens por página (padrão 10)"),
+    phone: Optional[str] = Query(None, description="Filtrar por telefone (contém)"),
+    message: Optional[str] = Query(None, description="Filtrar por texto da mensagem (contém, case insensitive)"),
+    status: Optional[str] = Query(None, description="Filtrar por status"),
+    date_from: Optional[str] = Query(None, description="Data inicial (YYYY-MM-DD ou ISO)"),
+    date_to: Optional[str] = Query(None, description="Data final (YYYY-MM-DD ou ISO)"),
 ):
     """
     Lista entradas da fila de envio assíncrono, da mais recente para a mais antiga (`created_at` DESC).
     """
-    raw, total = async_queue.list_queue_jobs_desc(mgd, page, page_size)
+    raw, total = async_queue.list_queue_jobs_desc(
+        mgd,
+        page,
+        page_size,
+        phone=phone,
+        message=message,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+    )
     total_pages = (total + page_size - 1) // page_size if total > 0 else 0
     items = [SendQueueJobItem.model_validate(r) for r in raw]
     return SendQueueListResponse(
@@ -1108,6 +1210,21 @@ async def get_send_queue(
         page_size=page_size,
         total_pages=total_pages,
     )
+
+
+class SendQueueCancelResponse(BaseModel):
+    success: bool = Field(..., description="Cancelamento aplicado")
+    job_id: str = Field(..., description="ID do job")
+    message: str = Field(..., description="Detalhe do resultado")
+
+
+@app.post("/sendQueue/{job_id}/cancel", tags=["Mensagens"], response_model=SendQueueCancelResponse)
+async def cancel_send_queue_job(job_id: str):
+    """Cancela um job pendente para que não seja enviado pelo worker."""
+    ok, detail = async_queue.cancel_job(mgd, job_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=detail)
+    return SendQueueCancelResponse(success=True, job_id=job_id, message=detail)
 
 
 @app.get("/getChats", tags=["Chats"], response_model=GetChatsResponse)
