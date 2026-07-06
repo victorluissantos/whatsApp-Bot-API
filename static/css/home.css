@@ -1,0 +1,127 @@
+.home-title {
+    color: #25D366;
+    text-align: center;
+    margin-top: 0;
+    margin-bottom: 10px;
+}
+
+.home-subtitle {
+    text-align: center;
+    color: #666;
+    margin-top: 0;
+    margin-bottom: 30px;
+}
+
+.endpoint {
+    background: #f8f9fa;
+    padding: 20px;
+    margin: 20px 0;
+    border-radius: 8px;
+    border-left: 4px solid #25D366;
+}
+
+.endpoint h2 {
+    color: #333;
+    margin-top: 0;
+}
+
+.method {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 12px;
+    margin-right: 10px;
+}
+
+.method.get {
+    background: #61affe;
+    color: white;
+}
+
+.method.post {
+    background: #49cc90;
+    color: white;
+}
+
+.status-connected {
+    color: #28a745;
+    font-weight: bold;
+}
+
+.status-disconnected {
+    color: #dc3545;
+    font-weight: bold;
+}
+
+.qr-code {
+    text-align: center;
+    margin: 20px 0;
+}
+
+.qr-code img {
+    max-width: 300px;
+    border: 2px solid #ddd;
+    border-radius: 8px;
+}
+
+.accordion {
+    margin: 20px 0;
+}
+
+.accordion-header {
+    background: #25D366;
+    color: white;
+    padding: 15px 20px;
+    cursor: pointer;
+    border-radius: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background-color 0.3s ease;
+}
+
+.accordion-header:hover {
+    background: #128C7E;
+}
+
+.accordion-header h2 {
+    margin: 0;
+    color: white;
+    font-size: 16px;
+}
+
+.accordion-content {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+    background: #f8f9fa;
+    border-radius: 0 0 8px 8px;
+}
+
+.accordion-content.active {
+    max-height: 1000px;
+    padding: 20px;
+}
+
+.accordion-icon {
+    transition: transform 0.3s ease;
+    font-size: 18px;
+}
+
+.accordion-icon.rotated {
+    transform: rotate(180deg);
+}
+
+.accordion-content p {
+    margin: 10px 0;
+}
+
+.accordion-content ul {
+    margin: 10px 0;
+    padding-left: 20px;
+}
+
+.accordion-content button {
+    margin: 10px 5px 0 0;
+}

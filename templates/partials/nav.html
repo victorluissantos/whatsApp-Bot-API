@@ -1,0 +1,15 @@
+<nav class="top-nav">
+    <div class="nav-inner">
+        <a class="nav-brand" href="/">WhatsApp Bot API</a>
+        <button class="nav-toggle" type="button" aria-label="Abrir menu" onclick="toggleNavMenu()">&#9776;</button>
+        <div class="nav-menu" id="navMenu">
+            <a class="nav-link{% if active_nav == 'home' %} active{% endif %}" href="/">Home</a>
+            <a class="nav-link{% if active_nav == 'triggers' %} active{% endif %}" href="/triggers">Triggers</a>
+            <a class="nav-link{% if active_nav == 'send_queue' %} active{% endif %}" href="/send-queue">Fila de envio</a>
+            <a class="nav-link" href="/docs" target="_blank">Swagger</a>
+            <button id="btnRestartContainer" class="btn-danger" type="button" onclick="restartContainer()">Reiniciar Container</button>
+        </div>
+    </div>
+</nav>
+
+<div id="restartContainerResult" class="nav-toast" style="display: none;"></div>

@@ -611,7 +611,7 @@ def _run_unread_pane_cache_watcher():
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse("index.html", {"request": request, "active_nav": "home"})
 
 
 # --- Triggers: telas HTML (rotas estáticas antes de /triggers/{id}) ---

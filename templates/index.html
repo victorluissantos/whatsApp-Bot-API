@@ -1,493 +1,216 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WhatsApp Bot API - FastAPI</title>
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-            background-color: #f5f5f5;
-        }
-        .top-nav {
-            background: #128C7E;
-            color: white;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-        }
-        .nav-inner {
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 0 20px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            min-height: 56px;
-            gap: 16px;
-        }
-        .nav-brand {
-            color: white;
-            text-decoration: none;
-            font-weight: bold;
-            font-size: 1rem;
-            white-space: nowrap;
-        }
-        .nav-toggle {
-            display: none;
-            background: transparent;
-            border: 1px solid rgba(255,255,255,0.5);
-            color: white;
-            padding: 6px 10px;
-            border-radius: 5px;
-            cursor: pointer;
-            margin: 0;
-            font-size: 18px;
-            line-height: 1;
-        }
-        .nav-menu {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        .nav-link {
-            color: white;
-            text-decoration: none;
-            padding: 8px 14px;
-            border-radius: 5px;
-            font-size: 14px;
-            transition: background-color 0.2s ease;
-        }
-        .nav-link:hover {
-            background: rgba(255,255,255,0.15);
-        }
-        .nav-menu button {
-            margin: 0;
-            padding: 8px 14px;
-            font-size: 14px;
-        }
-        .nav-toast {
-            max-width: 900px;
-            margin: 12px auto 0;
-            padding: 0 20px;
-        }
-        .nav-toast .result {
-            margin-top: 0;
-        }
-        .page-wrap {
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .container {
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        h1 {
-            color: #25D366;
-            text-align: center;
-            margin-top: 0;
-            margin-bottom: 10px;
-        }
-        .subtitle {
-            text-align: center;
-            color: #666;
-            margin-top: 0;
-            margin-bottom: 30px;
-        }
-        .endpoint {
-            background: #f8f9fa;
-            padding: 20px;
-            margin: 20px 0;
-            border-radius: 8px;
-            border-left: 4px solid #25D366;
-        }
-        .endpoint h2 {
-            color: #333;
-            margin-top: 0;
-        }
-        .method {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-weight: bold;
-            font-size: 12px;
-            margin-right: 10px;
-        }
-        .get { background: #61affe; color: white; }
-        .post { background: #49cc90; color: white; }
-        .status-connected { color: #28a745; font-weight: bold; }
-        .status-disconnected { color: #dc3545; font-weight: bold; }
-        button {
-            background: #25D366;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            margin: 10px 5px;
-        }
-        button:hover {
-            background: #128C7E;
-        }
-        button.btn-danger {
-            background: #dc3545;
-        }
-        button.btn-danger:hover {
-            background: #c82333;
-        }
-        button.btn-danger:disabled {
-            background: #e4606d;
-            cursor: not-allowed;
-        }
-        .result {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 5px;
-            margin-top: 10px;
-            white-space: pre-wrap;
-            font-family: monospace;
-            font-size: 12px;
-        }
-        .qr-code {
-            text-align: center;
-            margin: 20px 0;
-        }
-        .qr-code img {
-            max-width: 300px;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-        }
-        
-        /* Estilos para o accordion */
-        .accordion {
-            margin: 20px 0;
-        }
-        
-        .accordion-header {
-            background: #25D366;
-            color: white;
-            padding: 15px 20px;
-            cursor: pointer;
-            border-radius: 8px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            transition: background-color 0.3s ease;
-        }
-        
-        .accordion-header:hover {
-            background: #128C7E;
-        }
-        
-        .accordion-header h2 {
-            margin: 0;
-            color: white;
-            font-size: 16px;
-        }
-        
-        .accordion-content {
-            max-height: 0;
-            overflow: hidden;
-            transition: max-height 0.3s ease;
-            background: #f8f9fa;
-            border-radius: 0 0 8px 8px;
-        }
-        
-        .accordion-content.active {
-            max-height: 1000px;
-            padding: 20px;
-        }
-        
-        .accordion-icon {
-            transition: transform 0.3s ease;
-            font-size: 18px;
-        }
-        
-        .accordion-icon.rotated {
-            transform: rotate(180deg);
-        }
-        
-        /* Ajustes para o conteúdo do accordion */
-        .accordion-content p {
-            margin: 10px 0;
-        }
-        
-        .accordion-content ul {
-            margin: 10px 0;
-            padding-left: 20px;
-        }
-        
-        .accordion-content button {
-            margin: 10px 5px 0 0;
-        }
+{% extends "base.html" %}
 
-        @media (max-width: 640px) {
-            .nav-toggle {
-                display: block;
-            }
-            .nav-menu {
-                display: none;
-                flex-direction: column;
-                align-items: stretch;
-                width: 100%;
-                padding: 12px 0 16px;
-                gap: 8px;
-            }
-            .nav-menu.open {
-                display: flex;
-            }
-            .nav-inner {
-                flex-wrap: wrap;
-            }
-            .nav-link,
-            .nav-menu button {
-                width: 100%;
-                text-align: center;
-            }
-            .container {
-                padding: 20px;
-            }
-        }
-    </style>
-</head>
-<body>
-    <nav class="top-nav">
-        <div class="nav-inner">
-            <a class="nav-brand" href="/">WhatsApp Bot API</a>
-            <button class="nav-toggle" type="button" aria-label="Abrir menu" onclick="toggleNavMenu()">&#9776;</button>
-            <div class="nav-menu" id="navMenu">
-                <a class="nav-link" href="/">Home</a>
-                <a class="nav-link" href="/triggers">Triggers</a>
-                <a class="nav-link" href="/docs" target="_blank">Swagger</a>
-                <button id="btnRestartContainer" class="btn-danger" type="button" onclick="restartContainer()">Reiniciar Container</button>
-            </div>
+{% block title %}WhatsApp Bot API - FastAPI{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="/static/css/home.css">
+{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1 class="home-title">🤖 WhatsApp Bot API</h1>
+    <p class="home-subtitle">API simplificada para automação do WhatsApp</p>
+
+    <div class="accordion">
+        <div class="accordion-header" onclick="toggleAccordion(this)">
+            <h2>
+                <span class="method get">GET</span>
+                /status
+            </h2>
+            <span class="accordion-icon">▼</span>
         </div>
-    </nav>
-
-    <div id="restartContainerResult" class="nav-toast" style="display: none;"></div>
-
-    <div class="page-wrap">
-    <div class="container">
-        <h1>🤖 WhatsApp Bot API</h1>
-        <p class="subtitle">API simplificada para automação do WhatsApp</p>
-
-        <div class="accordion">
-            <div class="accordion-header" onclick="toggleAccordion(this)">
-                <h2>
-                    <span class="method get">GET</span>
-                    /status
-                </h2>
-                <span class="accordion-icon">▼</span>
-            </div>
-            <div class="accordion-content">
-                <p><strong>Descrição:</strong> Verifica se o WhatsApp está conectado. Se não estiver, retorna o QR Code para conexão.</p>
-                <p><strong>Resposta:</strong></p>
-                <ul>
-                    <li><code>connected: true/false</code> - Status da conexão</li>
-                    <li><code>qrCode: string</code> - QR Code em base64 (se não conectado)</li>
-                    <li><code>error: string</code> - Mensagem de erro (se houver)</li>
-                </ul>
-                <button id="btnStatus" onclick="checkStatus()">Verificar Status</button>
-                <div id="statusResult" class="result" style="display: none;"></div>
-                <div id="qrCodeResult" class="qr-code" style="display: none;"></div>
-            </div>
+        <div class="accordion-content">
+            <p><strong>Descrição:</strong> Verifica se o WhatsApp está conectado. Se não estiver, retorna o QR Code para conexão.</p>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>connected: true/false</code> - Status da conexão</li>
+                <li><code>qrCode: string</code> - QR Code em base64 (se não conectado)</li>
+                <li><code>error: string</code> - Mensagem de erro (se houver)</li>
+            </ul>
+            <button id="btnStatus" onclick="checkStatus()">Verificar Status</button>
+            <div id="statusResult" class="result" style="display: none;"></div>
+            <div id="qrCodeResult" class="qr-code" style="display: none;"></div>
         </div>
-
-        <div class="accordion">
-            <div class="accordion-header" onclick="toggleAccordion(this)">
-                <h2>
-                    <span class="method post">POST</span>
-                    /sendMessage
-                </h2>
-                <span class="accordion-icon">▼</span>
-            </div>
-            <div class="accordion-content">
-                <p><strong>Descrição:</strong> Envia uma mensagem de texto via WhatsApp.</p>
-                <p><strong>Parâmetros:</strong></p>
-                <ul>
-                    <li><code>phone: string</code> - Número de telefone (máx. 22 caracteres)</li>
-                    <li><code>message: string</code> - Texto da mensagem (máx. 800 caracteres)</li>
-                </ul>
-                <p><strong>Resposta:</strong></p>
-                <ul>
-                    <li><code>success: boolean</code> - Se a mensagem foi enviada</li>
-                    <li><code>phone: string</code> - Número do telefone</li>
-                    <li><code>message: string</code> - Mensagem de status</li>
-                </ul>
-                <button id="btnSendMessage" onclick="sendMessage()">Enviar Mensagem</button>
-                <div id="sendMessageResult" class="result" style="display: none;"></div>
-            </div>
-        </div>
-
-        <div class="accordion">
-            <div class="accordion-header" onclick="toggleAccordion(this)">
-                <h2>
-                    <span class="method get">GET</span>
-                    /sendMessage
-                </h2>
-                <span class="accordion-icon">▼</span>
-            </div>
-            <div class="accordion-content">
-                <p><strong>Descrição:</strong> Envia uma mensagem de texto via WhatsApp (método GET).</p>
-                <p><strong>Parâmetros:</strong></p>
-                <ul>
-                    <li><code>phone: string</code> - Número de telefone (máx. 22 caracteres)</li>
-                    <li><code>message: string</code> - Texto da mensagem (máx. 800 caracteres)</li>
-                </ul>
-                <button onclick="sendMessageGet()">Enviar Mensagem (GET)</button>
-                <div id="sendMessageGetResult" class="result" style="display: none;"></div>
-            </div>
-        </div>
-
-        <div class="accordion">
-            <div class="accordion-header" onclick="toggleAccordion(this)">
-                <h2>
-                    <span class="method get">GET</span>
-                    /profile
-                </h2>
-                <span class="accordion-icon">▼</span>
-            </div>
-            <div class="accordion-content">
-                <p><strong>Descrição:</strong> Obtém informações do perfil do WhatsApp conectado.</p>
-                <p><strong>Resposta:</strong></p>
-                <ul>
-                    <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
-                    <li><code>profile: object</code> - Dados do perfil (nome, foto, etc.)</li>
-                </ul>
-                <button onclick="getProfile()">Obter Perfil</button>
-                <div id="profileResult" class="result" style="display: none;"></div>
-            </div>
-        </div>
-
-        <div class="accordion">
-            <div class="accordion-header" onclick="toggleAccordion(this)">
-                <h2>
-                    <span class="method get">GET</span>
-                    /screenshot
-                </h2>
-                <span class="accordion-icon">▼</span>
-            </div>
-            <div class="accordion-content">
-                <p><strong>Descrição:</strong> Captura um screenshot completo da tela do WhatsApp Web.</p>
-                <p><strong>Resposta:</strong></p>
-                <ul>
-                    <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
-                    <li><code>screenshot: string</code> - Screenshot em base64</li>
-                    <li><code>path: string</code> - Caminho do arquivo salvo</li>
-                </ul>
-                <button onclick="getScreenshot()">Capturar Screenshot</button>
-                <div id="screenshotResult" class="result" style="display: none;"></div>
-                <div id="screenshotImage" class="qr-code" style="display: none;"></div>
-            </div>
-        </div>
-
-        <div class="accordion">
-            <div class="accordion-header" onclick="toggleAccordion(this)">
-                <h2>
-                    <span class="method get">GET</span>
-                    /getChats
-                </h2>
-                <span class="accordion-icon">▼</span>
-            </div>
-            <div class="accordion-content">
-                <p><strong>Descrição:</strong> Obtém a lista de conversas do WhatsApp com informações detalhadas.</p>
-                <p><strong>Parâmetros:</strong></p>
-                <ul>
-                    <li><code>limit: int</code> - Número de chats a retornar (1-50, padrão: 10)</li>
-                </ul>
-                <p><strong>Resposta:</strong></p>
-                <ul>
-                    <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
-                    <li><code>chats: array</code> - Lista de chats com nome, telefone, última mensagem, data/hora, foto e mensagens não lidas</li>
-                    <li><code>total: int</code> - Total de chats retornados</li>
-                    <li><code>limit: int</code> - Limite usado na consulta</li>
-                </ul>
-                <button onclick="getChats()">Obter Chats</button>
-                <div id="getChatsResult" class="result" style="display: none;"></div>
-            </div>
-        </div>
-
-        <div class="accordion">
-            <div class="accordion-header" onclick="toggleAccordion(this)">
-                <h2>
-                    <span class="method get">GET</span>
-                    /getMessage
-                </h2>
-                <span class="accordion-icon">▼</span>
-            </div>
-            <div class="accordion-content">
-                <p><strong>Descrição:</strong> Obtém as mensagens de um chat específico pelo número de telefone.</p>
-                <p><strong>Parâmetros:</strong></p>
-                <ul>
-                    <li><code>phone: string</code> - Número de telefone do contato (máx. 22 caracteres)</li>
-                </ul>
-                <p><strong>Resposta:</strong></p>
-                <ul>
-                    <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
-                    <li><code>contact_name: string</code> - Nome do contato</li>
-                    <li><code>phone: string</code> - Número de telefone</li>
-                    <li><code>messages: array</code> - Lista de mensagens com texto, data/hora e origem (enviada/recebida)</li>
-                    <li><code>total_messages: int</code> - Total de mensagens retornadas</li>
-                </ul>
-                <button onclick="getMessage()">Obter Mensagens</button>
-                <div id="getMessageResult" class="result" style="display: none;"></div>
-            </div>
-        </div>
-
-        <div class="accordion">
-            <div class="accordion-header" onclick="toggleAccordion(this)">
-                <h2>
-                    <span class="method post">POST</span>
-                    /reset
-                </h2>
-                <span class="accordion-icon">▼</span>
-            </div>
-            <div class="accordion-content">
-                <p><strong>Descrição:</strong> Recarrega completamente a tela do WhatsApp Web (simula Ctrl+Shift+R).</p>
-                <p><strong>Resposta:</strong></p>
-                <ul>
-                    <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
-                    <li><code>message: string</code> - Mensagem de status</li>
-                </ul>
-                <button id="btnReset" onclick="resetWhatsapp()">Resetar WhatsApp (Ctrl+Shift+R)</button>
-                <div id="resetResult" class="result" style="display:none;"></div>
-            </div>
-        </div>
-
-    </div>
     </div>
 
-    <script>
-function toggleNavMenu() {
-    document.getElementById('navMenu').classList.toggle('open');
-}
+    <div class="accordion">
+        <div class="accordion-header" onclick="toggleAccordion(this)">
+            <h2>
+                <span class="method post">POST</span>
+                /sendMessage
+            </h2>
+            <span class="accordion-icon">▼</span>
+        </div>
+        <div class="accordion-content">
+            <p><strong>Descrição:</strong> Envia uma mensagem de texto via WhatsApp.</p>
+            <p><strong>Parâmetros:</strong></p>
+            <ul>
+                <li><code>phone: string</code> - Número de telefone (máx. 22 caracteres)</li>
+                <li><code>message: string</code> - Texto da mensagem (máx. 800 caracteres)</li>
+            </ul>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>success: boolean</code> - Se a mensagem foi enviada</li>
+                <li><code>phone: string</code> - Número do telefone</li>
+                <li><code>message: string</code> - Mensagem de status</li>
+            </ul>
+            <button id="btnSendMessage" onclick="sendMessage()">Enviar Mensagem</button>
+            <div id="sendMessageResult" class="result" style="display: none;"></div>
+        </div>
+    </div>
 
-// Função para controlar o accordion
+    <div class="accordion">
+        <div class="accordion-header" onclick="toggleAccordion(this)">
+            <h2>
+                <span class="method get">GET</span>
+                /sendMessage
+            </h2>
+            <span class="accordion-icon">▼</span>
+        </div>
+        <div class="accordion-content">
+            <p><strong>Descrição:</strong> Envia uma mensagem de texto via WhatsApp (método GET).</p>
+            <p><strong>Parâmetros:</strong></p>
+            <ul>
+                <li><code>phone: string</code> - Número de telefone (máx. 22 caracteres)</li>
+                <li><code>message: string</code> - Texto da mensagem (máx. 800 caracteres)</li>
+            </ul>
+            <button onclick="sendMessageGet()">Enviar Mensagem (GET)</button>
+            <div id="sendMessageGetResult" class="result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <div class="accordion">
+        <div class="accordion-header" onclick="toggleAccordion(this)">
+            <h2>
+                <span class="method get">GET</span>
+                /profile
+            </h2>
+            <span class="accordion-icon">▼</span>
+        </div>
+        <div class="accordion-content">
+            <p><strong>Descrição:</strong> Obtém informações do perfil do WhatsApp conectado.</p>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                <li><code>profile: object</code> - Dados do perfil (nome, foto, etc.)</li>
+            </ul>
+            <button onclick="getProfile()">Obter Perfil</button>
+            <div id="profileResult" class="result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <div class="accordion">
+        <div class="accordion-header" onclick="toggleAccordion(this)">
+            <h2>
+                <span class="method get">GET</span>
+                /screenshot
+            </h2>
+            <span class="accordion-icon">▼</span>
+        </div>
+        <div class="accordion-content">
+            <p><strong>Descrição:</strong> Captura um screenshot completo da tela do WhatsApp Web.</p>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                <li><code>screenshot: string</code> - Screenshot em base64</li>
+                <li><code>path: string</code> - Caminho do arquivo salvo</li>
+            </ul>
+            <button onclick="getScreenshot()">Capturar Screenshot</button>
+            <div id="screenshotResult" class="result" style="display: none;"></div>
+            <div id="screenshotImage" class="qr-code" style="display: none;"></div>
+        </div>
+    </div>
+
+    <div class="accordion">
+        <div class="accordion-header" onclick="toggleAccordion(this)">
+            <h2>
+                <span class="method get">GET</span>
+                /getChats
+            </h2>
+            <span class="accordion-icon">▼</span>
+        </div>
+        <div class="accordion-content">
+            <p><strong>Descrição:</strong> Obtém a lista de conversas do WhatsApp com informações detalhadas.</p>
+            <p><strong>Parâmetros:</strong></p>
+            <ul>
+                <li><code>limit: int</code> - Número de chats a retornar (1-50, padrão: 10)</li>
+            </ul>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                <li><code>chats: array</code> - Lista de chats com nome, telefone, última mensagem, data/hora, foto e mensagens não lidas</li>
+                <li><code>total: int</code> - Total de chats retornados</li>
+                <li><code>limit: int</code> - Limite usado na consulta</li>
+            </ul>
+            <button onclick="getChats()">Obter Chats</button>
+            <div id="getChatsResult" class="result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <div class="accordion">
+        <div class="accordion-header" onclick="toggleAccordion(this)">
+            <h2>
+                <span class="method get">GET</span>
+                /getMessage
+            </h2>
+            <span class="accordion-icon">▼</span>
+        </div>
+        <div class="accordion-content">
+            <p><strong>Descrição:</strong> Obtém as mensagens de um chat específico pelo número de telefone.</p>
+            <p><strong>Parâmetros:</strong></p>
+            <ul>
+                <li><code>phone: string</code> - Número de telefone do contato (máx. 22 caracteres)</li>
+            </ul>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                <li><code>contact_name: string</code> - Nome do contato</li>
+                <li><code>phone: string</code> - Número de telefone</li>
+                <li><code>messages: array</code> - Lista de mensagens com texto, data/hora e origem (enviada/recebida)</li>
+                <li><code>total_messages: int</code> - Total de mensagens retornadas</li>
+            </ul>
+            <button onclick="getMessage()">Obter Mensagens</button>
+            <div id="getMessageResult" class="result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <div class="accordion">
+        <div class="accordion-header" onclick="toggleAccordion(this)">
+            <h2>
+                <span class="method post">POST</span>
+                /reset
+            </h2>
+            <span class="accordion-icon">▼</span>
+        </div>
+        <div class="accordion-content">
+            <p><strong>Descrição:</strong> Recarrega completamente a tela do WhatsApp Web (simula Ctrl+Shift+R).</p>
+            <p><strong>Resposta:</strong></p>
+            <ul>
+                <li><code>success: boolean</code> - Se a operação foi bem-sucedida</li>
+                <li><code>message: string</code> - Mensagem de status</li>
+            </ul>
+            <button id="btnReset" onclick="resetWhatsapp()">Resetar WhatsApp (Ctrl+Shift+R)</button>
+            <div id="resetResult" class="result" style="display:none;"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
 function toggleAccordion(header) {
     const content = header.nextElementSibling;
     const icon = header.querySelector('.accordion-icon');
-    
-    // Fecha todos os outros accordions
     const allContents = document.querySelectorAll('.accordion-content');
     const allIcons = document.querySelectorAll('.accordion-icon');
-    
+
     allContents.forEach((item, index) => {
         if (item !== content) {
             item.classList.remove('active');
             allIcons[index].classList.remove('rotated');
         }
     });
-    
-    // Toggle do accordion atual
+
     content.classList.toggle('active');
     icon.classList.toggle('rotated');
 }
@@ -502,23 +225,23 @@ function checkStatus() {
         .then(data => {
             const resultDiv = document.getElementById('statusResult');
             const qrDiv = document.getElementById('qrCodeResult');
-            
+
             resultDiv.style.display = 'block';
             qrDiv.style.display = 'none';
-            
+
             if (data.connected) {
-                resultDiv.innerHTML = `<span class="status-connected">✅ Conectado!</span>`;
+                resultDiv.innerHTML = '<span class="status-connected">✅ Conectado!</span>';
             } else {
-                resultDiv.innerHTML = `<span class="status-disconnected">❌ Não conectado</span>`;
+                resultDiv.innerHTML = '<span class="status-disconnected">❌ Não conectado</span>';
                 if (data.qrCode) {
                     qrDiv.style.display = 'block';
-                    qrDiv.innerHTML = `<h3>📱 QR Code para conexão:</h3><img src="${data.qrCode}" alt="QR Code">`;
+                    qrDiv.innerHTML = '<h3>📱 QR Code para conexão:</h3><img src="' + data.qrCode + '" alt="QR Code">';
                 }
             }
         })
         .catch(error => {
             document.getElementById('statusResult').style.display = 'block';
-            document.getElementById('statusResult').innerHTML = `Erro: ${error}`;
+            document.getElementById('statusResult').innerHTML = 'Erro: ' + error;
         })
         .finally(() => {
             btn.disabled = false;
@@ -526,231 +249,205 @@ function checkStatus() {
         });
 }
 
-        function sendMessage() {
-            const btn = document.getElementById('btnSendMessage');
-            btn.disabled = true;
-            btn.textContent = 'Aguarde...';
+function sendMessage() {
+    const btn = document.getElementById('btnSendMessage');
+    btn.disabled = true;
+    btn.textContent = 'Aguarde...';
 
-            const phone = prompt('Digite o número de telefone:');
-            const message = prompt('Digite a mensagem:');
-            if (!phone || !message) return;
+    const phone = prompt('Digite o número de telefone:');
+    const message = prompt('Digite a mensagem:');
+    if (!phone || !message) {
+        btn.disabled = false;
+        btn.textContent = 'Enviar Mensagem';
+        return;
+    }
 
-            const unic_sent = confirm('Marque OK para envio único (não enviar se já enviado). Cancelar para envio normal.');
+    const unic_sent = confirm('Marque OK para envio único (não enviar se já enviado). Cancelar para envio normal.');
 
-            fetch('/sendMessage', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    phone: phone,
-                    message: message,
-                    unic_sent: unic_sent
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                const resultDiv = document.getElementById('sendMessageResult');
+    fetch('/sendMessage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: phone, message: message, unic_sent: unic_sent })
+    })
+        .then(response => response.json())
+        .then(data => {
+            const resultDiv = document.getElementById('sendMessageResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = JSON.stringify(data, null, 2);
+        })
+        .catch(error => {
+            document.getElementById('sendMessageResult').style.display = 'block';
+            document.getElementById('sendMessageResult').innerHTML = 'Erro: ' + error;
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = 'Enviar Mensagem';
+        });
+}
+
+function sendMessageGet() {
+    const btn = document.querySelector('button[onclick="sendMessageGet()"]');
+    btn.disabled = true;
+    btn.textContent = 'Aguarde...';
+
+    const phone = prompt('Digite o número de telefone:');
+    const message = prompt('Digite a mensagem:');
+    if (!phone || !message) {
+        btn.disabled = false;
+        btn.textContent = 'Enviar Mensagem (GET)';
+        return;
+    }
+
+    const unic_sent = confirm('Marque OK para envio único (não enviar se já enviado). Cancelar para envio normal.');
+    const url = '/sendMessage?phone=' + encodeURIComponent(phone) + '&message=' + encodeURIComponent(message) + '&unic_sent=' + unic_sent;
+
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            const resultDiv = document.getElementById('sendMessageGetResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = JSON.stringify(data, null, 2);
+        })
+        .catch(error => {
+            document.getElementById('sendMessageGetResult').style.display = 'block';
+            document.getElementById('sendMessageGetResult').innerHTML = 'Erro: ' + error;
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = 'Enviar Mensagem (GET)';
+        });
+}
+
+function getProfile() {
+    const btn = document.querySelector('button[onclick="getProfile()"]');
+    btn.disabled = true;
+    btn.textContent = 'Aguarde...';
+
+    fetch('/profile')
+        .then(response => response.json())
+        .then(data => {
+            const resultDiv = document.getElementById('profileResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = JSON.stringify(data, null, 2);
+        })
+        .catch(error => {
+            document.getElementById('profileResult').style.display = 'block';
+            document.getElementById('profileResult').innerHTML = 'Erro: ' + error;
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = 'Obter Perfil';
+        });
+}
+
+function getScreenshot() {
+    const btn = document.querySelector('button[onclick="getScreenshot()"]');
+    btn.disabled = true;
+    btn.textContent = 'Aguarde...';
+
+    fetch('/screenshot')
+        .then(response => response.json())
+        .then(data => {
+            const resultDiv = document.getElementById('screenshotResult');
+            const imageDiv = document.getElementById('screenshotImage');
+
+            resultDiv.style.display = 'none';
+            imageDiv.style.display = 'none';
+
+            if (data.success && data.screenshot) {
+                imageDiv.style.display = 'block';
+                imageDiv.innerHTML = '<h3>📸 Screenshot da tela:</h3><img src="' + data.screenshot + '" alt="Screenshot" style="max-width: 100%; height: auto;">';
+            } else {
                 resultDiv.style.display = 'block';
                 resultDiv.innerHTML = JSON.stringify(data, null, 2);
-            })
-            .catch(error => {
-                document.getElementById('sendMessageResult').style.display = 'block';
-                document.getElementById('sendMessageResult').innerHTML = `Erro: ${error}`;
-            })
-            .finally(() => {
-                btn.disabled = false;
-                btn.textContent = 'Enviar Mensagem';
-            });
-        }
-
-        function sendMessageGet() {
-            const btn = document.querySelector('button[onclick="sendMessageGet()"]');
-            btn.disabled = true;
-            btn.textContent = 'Aguarde...';
-
-            const phone = prompt('Digite o número de telefone:');
-            const message = prompt('Digite a mensagem:');
-            if (!phone || !message) {
-                btn.disabled = false;
-                btn.textContent = 'Enviar Mensagem (GET)';
-                return;
             }
+        })
+        .catch(error => {
+            document.getElementById('screenshotResult').style.display = 'block';
+            document.getElementById('screenshotResult').innerHTML = 'Erro: ' + error;
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = 'Capturar Screenshot';
+        });
+}
 
-            const unic_sent = confirm('Marque OK para envio único (não enviar se já enviado). Cancelar para envio normal.');
+function getChats() {
+    const btn = document.querySelector('button[onclick="getChats()"]');
+    btn.disabled = true;
+    btn.textContent = 'Aguarde...';
 
-            const url = `/sendMessage?phone=${encodeURIComponent(phone)}&message=${encodeURIComponent(message)}&unic_sent=${unic_sent}`;
+    const limit = prompt('Digite o número de chats a retornar (1-50, padrão: 10):');
+    const url = '/getChats?limit=' + (limit || 10);
 
-            fetch(url)
-                .then(response => response.json())
-                .then(data => {
-                    const resultDiv = document.getElementById('sendMessageGetResult');
-                    resultDiv.style.display = 'block';
-                    resultDiv.innerHTML = JSON.stringify(data, null, 2);
-                })
-                .catch(error => {
-                    document.getElementById('sendMessageGetResult').style.display = 'block';
-                    document.getElementById('sendMessageGetResult').innerHTML = `Erro: ${error}`;
-                })
-                .finally(() => {
-                    btn.disabled = false;
-                    btn.textContent = 'Enviar Mensagem (GET)';
-                });
-        }
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            const resultDiv = document.getElementById('getChatsResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = JSON.stringify(data, null, 2);
+        })
+        .catch(error => {
+            document.getElementById('getChatsResult').style.display = 'block';
+            document.getElementById('getChatsResult').innerHTML = 'Erro: ' + error;
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = 'Obter Chats';
+        });
+}
 
-        function getProfile() {
-            const btn = document.querySelector('button[onclick="getProfile()"]');
-            btn.disabled = true;
-            btn.textContent = 'Aguarde...';
+function getMessage() {
+    const btn = document.querySelector('button[onclick="getMessage()"]');
+    btn.disabled = true;
+    btn.textContent = 'Aguarde...';
 
-            fetch('/profile')
-                .then(response => response.json())
-                .then(data => {
-                    const resultDiv = document.getElementById('profileResult');
-                    resultDiv.style.display = 'block';
-                    resultDiv.innerHTML = JSON.stringify(data, null, 2);
-                })
-                .catch(error => {
-                    document.getElementById('profileResult').style.display = 'block';
-                    document.getElementById('profileResult').innerHTML = `Erro: ${error}`;
-                })
-                .finally(() => {
-                    btn.disabled = false;
-                    btn.textContent = 'Obter Perfil';
-                });
-        }
+    const phone = prompt('Digite o número de telefone do contato:');
+    if (!phone) {
+        btn.disabled = false;
+        btn.textContent = 'Obter Mensagens';
+        return;
+    }
 
-        function getScreenshot() {
-            const btn = document.querySelector('button[onclick="getScreenshot()"]');
-            btn.disabled = true;
-            btn.textContent = 'Aguarde...';
+    const url = '/getMessage?phone=' + encodeURIComponent(phone);
 
-            fetch('/screenshot')
-                .then(response => response.json())
-                .then(data => {
-                    const resultDiv = document.getElementById('screenshotResult');
-                    const imageDiv = document.getElementById('screenshotImage');
-                    
-                    resultDiv.style.display = 'none';
-                    imageDiv.style.display = 'none';
-                    
-                    if (data.success && data.screenshot) {
-                        imageDiv.style.display = 'block';
-                        imageDiv.innerHTML = `<h3>📸 Screenshot da tela:</h3><img src="${data.screenshot}" alt="Screenshot" style="max-width: 100%; height: auto;">`;
-                    } else {
-                        resultDiv.style.display = 'block';
-                        resultDiv.innerHTML = JSON.stringify(data, null, 2);
-                    }
-                })
-                .catch(error => {
-                    document.getElementById('screenshotResult').style.display = 'block';
-                    document.getElementById('screenshotResult').innerHTML = `Erro: ${error}`;
-                })
-                .finally(() => {
-                    btn.disabled = false;
-                    btn.textContent = 'Capturar Screenshot';
-                });
-        }
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            const resultDiv = document.getElementById('getMessageResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = JSON.stringify(data, null, 2);
+        })
+        .catch(error => {
+            document.getElementById('getMessageResult').style.display = 'block';
+            document.getElementById('getMessageResult').innerHTML = 'Erro: ' + error;
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = 'Obter Mensagens';
+        });
+}
 
-        function getChats() {
-            const btn = document.querySelector('button[onclick="getChats()"]');
-            btn.disabled = true;
-            btn.textContent = 'Aguarde...';
+function resetWhatsapp() {
+    const btn = document.getElementById('btnReset');
+    btn.disabled = true;
+    btn.textContent = 'Aguarde...';
 
-            const limit = prompt('Digite o número de chats a retornar (1-50, padrão: 10):');
-            const url = `/getChats?limit=${limit || 10}`;
-
-            fetch(url)
-                .then(response => response.json())
-                .then(data => {
-                    const resultDiv = document.getElementById('getChatsResult');
-                    resultDiv.style.display = 'block';
-                    resultDiv.innerHTML = JSON.stringify(data, null, 2);
-                })
-                .catch(error => {
-                    document.getElementById('getChatsResult').style.display = 'block';
-                    document.getElementById('getChatsResult').innerHTML = `Erro: ${error}`;
-                })
-                .finally(() => {
-                    btn.disabled = false;
-                    btn.textContent = 'Obter Chats';
-                });
-        }
-
-        function getMessage() {
-            const btn = document.querySelector('button[onclick="getMessage()"]');
-            btn.disabled = true;
-            btn.textContent = 'Aguarde...';
-
-            const phone = prompt('Digite o número de telefone do contato:');
-            if (!phone) {
-                btn.disabled = false;
-                btn.textContent = 'Obter Mensagens';
-                return;
-            }
-
-            const url = `/getMessage?phone=${encodeURIComponent(phone)}`;
-
-            fetch(url)
-                .then(response => response.json())
-                .then(data => {
-                    const resultDiv = document.getElementById('getMessageResult');
-                    resultDiv.style.display = 'block';
-                    resultDiv.innerHTML = JSON.stringify(data, null, 2);
-                })
-                .catch(error => {
-                    document.getElementById('getMessageResult').style.display = 'block';
-                    document.getElementById('getMessageResult').innerHTML = `Erro: ${error}`;
-                })
-                .finally(() => {
-                    btn.disabled = false;
-                    btn.textContent = 'Obter Mensagens';
-                });
-        }
-
-        function resetWhatsapp() {
-            const btn = document.getElementById('btnReset');
-            btn.disabled = true;
-            btn.textContent = 'Aguarde...';
-
-            fetch('/reset', { method: 'POST' })
-                .then(response => response.json())
-                .then(data => {
-                    const resultDiv = document.getElementById('resetResult');
-                    resultDiv.style.display = 'block';
-                    resultDiv.innerHTML = data.message || 'Erro desconhecido';
-                })
-                .catch(error => {
-                    document.getElementById('resetResult').style.display = 'block';
-                    document.getElementById('resetResult').innerHTML = `Erro: ${error}`;
-                })
-                .finally(() => {
-                    btn.disabled = false;
-                    btn.textContent = 'Resetar WhatsApp (Ctrl+Shift+R)';
-                });
-        }
-
-        function restartContainer() {
-            if (!confirm('Tem certeza que deseja reiniciar o container? A API ficará indisponível por alguns segundos.')) {
-                return;
-            }
-
-            const btn = document.getElementById('btnRestartContainer');
-            const resultDiv = document.getElementById('restartContainerResult');
-            btn.disabled = true;
-            btn.textContent = 'Reiniciando...';
-
-            fetch('/restartContainer', { method: 'POST' })
-                .then(response => response.json())
-                .then(data => {
-                    resultDiv.style.display = 'block';
-                    resultDiv.innerHTML = '<div class="result">' + (data.message || JSON.stringify(data, null, 2)) + '</div>';
-                })
-                .catch(() => {
-                    resultDiv.style.display = 'block';
-                    resultDiv.innerHTML = '<div class="result">Container reiniciando... aguarde alguns segundos e recarregue a página.</div>';
-                });
-        }
-    </script>
-</body>
-</html>
+    fetch('/reset', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+            const resultDiv = document.getElementById('resetResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = data.message || 'Erro desconhecido';
+        })
+        .catch(error => {
+            document.getElementById('resetResult').style.display = 'block';
+            document.getElementById('resetResult').innerHTML = 'Erro: ' + error;
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = 'Resetar WhatsApp (Ctrl+Shift+R)';
+        });
+}
+</script>
+{% endblock %}
