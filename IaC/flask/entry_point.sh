@@ -9,4 +9,5 @@ sleep 3 & \
 x11vnc -rfbport 5914 -passwd 'V0oiye3R' -display :99 -N -forever & \
 sleep 3 & \
 # python -m nltk.downloader punkt
-uvicorn main:app --host 0.0.0.0 --port 8000
+# exec: uvicorn vira PID 1 para o restart do Docker funcionar ao receber SIGTERM
+exec uvicorn main:app --host 0.0.0.0 --port 8000

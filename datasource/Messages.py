@@ -4,9 +4,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
-from datetime import datetime
 import time
-import re
 
 
 class Run:
@@ -16,364 +14,244 @@ class Run:
         self.mongo = mongo
         self.env = env
 
+    def _normalize_phone(self, phone):
+        telefone_digits = "".join(filter(str.isdigit, str(phone or "")))
+        if not telefone_digits:
+            return None
+        if not telefone_digits.startswith("55"):
+            telefone_digits = "55" + telefone_digits
+        return telefone_digits
+
+    # WhatsApp Web atual (2026): sem message-in/out nem true_/false_ no data-id.
+    # Sinais reais: tail-out/tail-in, aria-label="Você:", ícone de entrega.
+    _EXTRACT_MESSAGES_JS = r"""
+        const limit = arguments[0] || 20;
+        const root = document.querySelector('#main') || document;
+
+        let nodes = Array.from(root.querySelectorAll('[data-testid="msg-container"]'));
+        if (!nodes.length) {
+            nodes = Array.from(root.querySelectorAll('div.message-out, div.message-in'));
+        }
+
+        const filtered = [];
+        for (const el of nodes) {
+            if (filtered.some((n) => n.contains(el) || el.contains(n))) continue;
+            filtered.push(el);
+        }
+
+        function detectOrigem(el) {
+            // 1) Cauda da bolha (WhatsApp Web atual)
+            if (el.querySelector('[data-icon="tail-out"], [data-testid="tail-out"]')) {
+                return 'enviada';
+            }
+            if (el.querySelector('[data-icon="tail-in"], [data-testid="tail-in"]')) {
+                return 'recebida';
+            }
+
+            // 2) aria-label do remetente (mensagem agrupada sem cauda)
+            const labels = Array.from(el.querySelectorAll('[aria-label]'))
+                .map((n) => ((n.getAttribute('aria-label') || '').trim().toLowerCase()));
+            if (labels.some((l) => l === 'você:' || l === 'voce:' || l === 'you:')) {
+                return 'enviada';
+            }
+            // Contato (telefone/nome) no aria-label => recebida
+            if (labels.some((l) => l.endsWith(':'))) {
+                return 'recebida';
+            }
+
+            // 3) Ícone/status de entrega (só enviadas)
+            if (el.querySelector('[aria-label*="Entregue"], [aria-label*="Delivered"], [aria-label*="Lida"], [aria-label*="Read"], [aria-label*="Enviada"]')) {
+                return 'enviada';
+            }
+            const titles = Array.from(el.querySelectorAll('svg title'))
+                .map((t) => (t.textContent || '').toLowerCase());
+            if (titles.some((t) => t.includes('wds-ic-read') || t.includes('msg-check') || t.includes('msg-dblcheck'))) {
+                return 'enviada';
+            }
+
+            // 4) Fallbacks de versões antigas
+            const bubble = el.closest('div.message-out, div.message-in') || el;
+            const cls = (bubble.className && String(bubble.className)) || '';
+            if (cls.includes('message-out')) return 'enviada';
+            if (cls.includes('message-in')) return 'recebida';
+
+            const idNode = el.closest('[data-id]') || el.querySelector('[data-id]');
+            const dataId = ((idNode && idNode.getAttribute('data-id')) || '').toLowerCase();
+            if (dataId.startsWith('true_')) return 'enviada';
+            if (dataId.startsWith('false_')) return 'recebida';
+
+            return 'recebida';
+        }
+
+        function extractText(el) {
+            const textEl = el.querySelector(
+                '[data-testid="selectable-text"], span.selectable-text.copyable-text, span.selectable-text, span[dir="ltr"]'
+            );
+            const message = textEl ? (textEl.innerText || '').trim() : '';
+            if (message) return message;
+            if (el.querySelector('[data-testid="audio-play"]')) return '[Áudio]';
+            if (el.querySelector('img')) return '[Mídia]';
+            return 'Mensagem não legível';
+        }
+
+        function extractData(el) {
+            const copyable = el.querySelector('div.copyable-text');
+            const pre = (copyable && copyable.getAttribute('data-pre-plain-text')) || '';
+            if (pre) {
+                const m = pre.match(/\[([^\]]+)\]/);
+                return (m ? m[1] : pre).trim();
+            }
+            const meta = el.querySelector('[data-testid="msg-meta"]');
+            const metaText = meta ? (meta.innerText || '').trim() : '';
+            return metaText || 'Horário não disponível';
+        }
+
+        return filtered.slice(-limit).map((el) => ({
+            message: extractText(el),
+            data: extractData(el),
+            origem: detectOrigem(el),
+        }));
+    """
+
     def getMessages(self, navegador, phone):
         """
-        Abre a conversa de um contato específico pelo número de telefone
-        e extrai as mensagens da conversa
-        
-        Args:
-            navegador: Instância do webdriver
-            phone: Número de telefone do contato
-            
-        Returns:
-            dict: Dicionário com informações das mensagens ou erro
+        Abre a conversa de um contato pelo número (via URL do WhatsApp Web)
+        e extrai as mensagens da conversa.
         """
         try:
             print(f"Iniciando busca de mensagens para o telefone: {phone}")
-            
-            # Limpar qualquer estado anterior (igual ao syncSendText)
-            webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
-            time.sleep(0.5)
-            webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
-            time.sleep(0.5)
 
-            # Clica no botão 'Nova conversa' usando seletor CSS (igual ao syncSendText)
-            # Tentar diferentes variações de idioma e seletores
-            nova_conversa_selectors = [
-                'button[title="Nova conversa"][aria-label="Nova conversa"]',
-                'button[title="New chat"][aria-label="New chat"]',
-                'button[aria-label="Nova conversa"]',
-                'button[aria-label="New chat"]',
-                'button[title="Nova conversa"]',
-                'button[title="New chat"]',
-                'button[data-testid="chat"]',
-                'button[data-testid="new-chat"]',
-                'button[data-testid="new-chat-button"]',
-                'button[aria-label*="chat"]',
-                'button[title*="chat"]',
-                'button[aria-label*="conversa"]',
-                'button[title*="conversa"]'
-            ]
-            
-            btn_nova_conversa = None
-            for selector in nova_conversa_selectors:
-                try:
-                    btn_nova_conversa = navegador.find_element(By.CSS_SELECTOR, selector)
-                    print(f"Botão 'Nova conversa' encontrado com seletor: {selector}")
-                    break
-                except NoSuchElementException:
-                    continue
-            
-            if not btn_nova_conversa:
-                # Tentar encontrar por XPath como fallback
-                xpath_selectors = [
-                    '//button[@aria-label="Nova conversa"]',
-                    '//button[@aria-label="New chat"]',
-                    '//button[@title="Nova conversa"]',
-                    '//button[@title="New chat"]',
-                    '//button[contains(@aria-label, "chat")]',
-                    '//button[contains(@title, "chat")]',
-                    '//button[contains(@aria-label, "conversa")]',
-                    '//button[contains(@title, "conversa")]'
-                ]
-                
-                for xpath_selector in xpath_selectors:
-                    try:
-                        btn_nova_conversa = navegador.find_element(By.XPATH, xpath_selector)
-                        print(f"Botão 'Nova conversa' encontrado com XPath: {xpath_selector}")
-                        break
-                    except NoSuchElementException:
-                        continue
-            
-            if not btn_nova_conversa:
-                print("Botão 'Nova conversa' não encontrado")
-                return {
-                    "success": False,
-                    "error": "Botão 'Nova conversa' não encontrado",
-                    "phone": phone
-                }
-            
-            btn_nova_conversa.click()
-            time.sleep(0.5)
-            print("Botão 'Nova conversa' clicado")
-
-            # Campo de busca de contato/conversa (tentar diferentes idiomas)
-            campo_busca_selectors = [
-                'div[contenteditable="true"][aria-label="Pesquisar nome ou número"]',
-                'div[contenteditable="true"][aria-label="Search name or number"]',
-                'div[contenteditable="true"][aria-label="Search"]',
-                'div[contenteditable="true"][data-testid="chat-list-search"]',
-                'div[contenteditable="true"]'
-            ]
-            
-            campo_busca = None
-            for selector in campo_busca_selectors:
-                try:
-                    campo_busca = navegador.find_element(By.CSS_SELECTOR, selector)
-                    print(f"Campo de busca encontrado com seletor: {selector}")
-                    break
-                except NoSuchElementException:
-                    continue
-            
-            if not campo_busca:
-                print("Campo de busca não encontrado")
-                return {
-                    "success": False,
-                    "error": "Campo de busca não encontrado",
-                    "phone": phone
-                }
-            
-            campo_busca.clear()
-            time.sleep(0.2)
-            # Evita +5555... quando o phone já vem com DDI 55 (ex.: trigger_engine).
-            telefone_digits = "".join(filter(str.isdigit, str(phone or "")))
+            telefone_digits = self._normalize_phone(phone)
             if not telefone_digits:
                 return {
                     "success": False,
                     "error": "Telefone inválido",
                     "phone": phone,
                 }
-            if not telefone_digits.startswith("55"):
-                telefone_digits = "55" + telefone_digits
-            telefone = "+" + telefone_digits
-            campo_busca.send_keys(telefone)
-            time.sleep(1)
-            campo_busca.send_keys(Keys.RETURN)
-            time.sleep(1)
-            print(f"Telefone {telefone} digitado no campo de busca")
 
-            # Aguardar até que a conversa carregue (tentar diferentes seletores)
-            conversation_loaded = False
-            selectors = [
-                '//div[@data-testid="conversation-panel-wrapper"]',
-                '//div[@data-testid="conversation-panel-messages"]',
-                '//div[contains(@class, "conversation")]',
-                '//div[contains(@class, "chat")]',
-                '//div[@data-testid="chat-list"]',
-                '//div[@data-testid="conversation-panel"]',
-                '//div[contains(@class, "messages")]',
-                '//div[@data-testid="conversation-panel-wrapper"]//div[contains(@class, "messages")]',
-                '//div[@data-testid="conversation-panel"]//div[contains(@class, "messages")]'
+            # Mesmo fluxo resiliente do syncSendText: abre o chat direto por URL.
+            link = f"https://web.whatsapp.com/send?phone={telefone_digits}"
+            navegador.get(link)
+            print(f"[DEPURACAO] URL aberta: {link}")
+
+            WebDriverWait(navegador, 20).until(
+                EC.presence_of_element_located((By.ID, "app"))
+            )
+
+            invalid_xpaths = [
+                '//*[contains(text(), "número de telefone compartilhado pela URL é inválido")]',
+                '//*[contains(text(), "Phone number shared via url is invalid")]',
+                '//*[contains(text(), "phone number shared via url is invalid")]',
+                '//*[contains(text(), "não está no WhatsApp")]',
+                '//*[contains(text(), "isn\'t on WhatsApp")]',
             ]
-            
-            # Aguardar mais tempo para a conversa carregar
-            time.sleep(3)
-            
-            for selector in selectors:
+            for invalid_xpath in invalid_xpaths:
                 try:
-                    WebDriverWait(navegador, 15).until(
-                        EC.presence_of_element_located((By.XPATH, selector))
+                    WebDriverWait(navegador, 2).until(
+                        EC.presence_of_element_located((By.XPATH, invalid_xpath))
+                    )
+                    return {
+                        "success": False,
+                        "error": "Contato/número inválido ou não está no WhatsApp",
+                        "phone": phone,
+                    }
+                except TimeoutException:
+                    continue
+
+            conversation_loaded = False
+            ready_selectors = [
+                (By.CSS_SELECTOR, 'div[contenteditable="true"][data-testid="conversation-compose-box-input"]'),
+                (By.CSS_SELECTOR, 'footer div[contenteditable="true"][role="textbox"]'),
+                (By.CSS_SELECTOR, 'div[contenteditable="true"][aria-label="Digite uma mensagem"]'),
+                (By.CSS_SELECTOR, 'div[contenteditable="true"][aria-label="Type a message"]'),
+                (By.XPATH, '//div[@data-testid="conversation-panel-wrapper"]'),
+                (By.XPATH, '//div[@data-testid="conversation-panel-messages"]'),
+                (By.XPATH, '//div[@id="main"]'),
+            ]
+            for by, selector in ready_selectors:
+                try:
+                    WebDriverWait(navegador, 12).until(
+                        EC.presence_of_element_located((by, selector))
                     )
                     conversation_loaded = True
                     print(f"Conversa carregada com seletor: {selector}")
                     break
                 except TimeoutException:
                     continue
-            
+
             if not conversation_loaded:
-                # Tentar verificar se há algum erro ou mensagem de "não encontrado"
-                try:
-                    error_elements = navegador.find_elements(By.XPATH, '//div[contains(text(), "não encontrado") or contains(text(), "not found") or contains(text(), "inválido") or contains(text(), "invalid")]')
-                    if error_elements:
-                        error_text = error_elements[0].text
-                        print(f"Erro encontrado: {error_text}")
-                        return {
-                            "success": False,
-                            "error": f"Contato não encontrado: {error_text}",
-                            "phone": phone
-                        }
-                except:
-                    pass
-                
-                print("Conversa não carregou")
                 return {
                     "success": False,
                     "error": "Conversa não encontrada ou não foi possível carregar",
-                    "phone": phone
+                    "phone": phone,
                 }
-            
-            # Verificar se o chat existe e obter nome do contato
+
             try:
-                # Tentar encontrar o nome do contato
-                contact_name = navegador.find_element(By.XPATH, '//span[@data-testid="conversation-title"]')
+                contact_name = navegador.find_element(
+                    By.XPATH, '//span[@data-testid="conversation-title"]'
+                )
                 contact_name_text = contact_name.text
-                print(f"Nome do contato encontrado: {contact_name_text}")
             except NoSuchElementException:
                 contact_name_text = f"Contato {phone}"
-                print(f"Nome do contato não encontrado, usando padrão: {contact_name_text}")
-            
-            # Aguardar um pouco para as mensagens carregarem
-            time.sleep(3)
-            print("Aguardando carregamento das mensagens...")
-            
-            # Tentar encontrar as mensagens
-            try:
-                # Tentar diferentes seletores para o container de mensagens (independente do idioma)
-                container_selectors = [
-                    '//div[@data-testid="conversation-panel-messages"]',
-                    '//div[contains(@class, "messages")]',
-                    '//div[contains(@class, "chat")]',
-                    '//div[@data-testid="chat-list"]',
-                    '//div[@data-testid="conversation-panel"]//div[contains(@class, "messages")]',
-                    '//div[@data-testid="conversation-panel-wrapper"]//div[contains(@class, "messages")]',
-                    '//div[contains(@class, "conversation")]//div[contains(@class, "messages")]'
-                ]
-                
-                messages_container = None
-                for container_selector in container_selectors:
+                for title_selector in (
+                    '#main header span[dir="auto"]',
+                    '#main header span[title]',
+                    'header span[data-testid="conversation-info-header-chat-title"]',
+                ):
                     try:
-                        messages_container = navegador.find_element(By.XPATH, container_selector)
-                        print(f"Container de mensagens encontrado com seletor: {container_selector}")
-                        break
+                        el = navegador.find_element(By.CSS_SELECTOR, title_selector)
+                        title = (el.get_attribute("title") or el.text or "").strip()
+                        if title:
+                            contact_name_text = title
+                            break
                     except NoSuchElementException:
                         continue
-                
-                if not messages_container:
-                    print("Container de mensagens não encontrado")
-                    return {
-                        "success": False,
-                        "error": "Container de mensagens não encontrado",
-                        "phone": phone,
-                        "contact_name": contact_name_text
-                    }
-                
-                # Encontrar todas as mensagens usando múltiplos seletores
-                message_elements = []
-                
-                # Tentar diferentes seletores para encontrar mensagens
-                selectors = [
-                    './/div[contains(@class, "message-in") or contains(@class, "message-out")]',
-                    './/div[contains(@data-testid, "msg-container")]',
-                    './/div[contains(@class, "copyable-text")]',
-                    './/div[contains(@class, "message")]'
-                ]
-                
-                for selector in selectors:
-                    try:
-                        elements = messages_container.find_elements(By.XPATH, selector)
-                        if elements:
-                            message_elements = elements
-                            print(f"Mensagens encontradas com seletor: {selector}, quantidade: {len(elements)}")
-                            break
-                    except:
-                        continue
-                
-                if not message_elements:
-                    print("Nenhuma mensagem encontrada")
-                    return {
-                        "success": True,
-                        "contact_name": contact_name_text,
-                        "phone": phone,
-                        "messages": [],
-                        "total_messages": 0
-                    }
-                
+
+            print(f"Nome do contato: {contact_name_text}")
+            time.sleep(1.5)
+
+            try:
+                messages = navegador.execute_script(self._EXTRACT_MESSAGES_JS, 20) or []
+            except Exception as js_err:
+                print(f"Falha na extração JS de mensagens: {js_err}")
                 messages = []
-                
-                # Processar as últimas 20 mensagens
-                for msg_element in message_elements[-20:]:
-                    try:
-                        # Extrair o texto da mensagem
-                        message_text = ""
-                        text_selectors = [
-                            './/span[@dir="ltr"]',
-                            './/div[contains(@class, "copyable-text")]//span',
-                            './/span[contains(@class, "selectable-text")]',
-                            './/div[contains(@class, "text")]//span'
-                        ]
-                        
-                        for text_selector in text_selectors:
-                            try:
-                                text_element = msg_element.find_element(By.XPATH, text_selector)
-                                message_text = text_element.text.strip()
-                                if message_text:
-                                    break
-                            except NoSuchElementException:
-                                continue
-                        
-                        if not message_text:
-                            message_text = "Mensagem não legível"
-                        
-                        # Determinar origem (enviada ou recebida)
-                        origem = "recebida"  # padrão
-                        try:
-                            # Verificar se é mensagem enviada
-                            if "message-out" in msg_element.get_attribute("class"):
-                                origem = "enviada"
-                            elif "message-in" in msg_element.get_attribute("class"):
-                                origem = "recebida"
-                            else:
-                                # Tentar outros métodos para determinar origem
-                                parent_classes = msg_element.get_attribute("class") or ""
-                                if "outgoing" in parent_classes or "sent" in parent_classes:
-                                    origem = "enviada"
-                                elif "incoming" in parent_classes or "received" in parent_classes:
-                                    origem = "recebida"
-                        except:
-                            origem = "recebida"  # padrão se não conseguir determinar
-                        
-                        # Extrair data/hora da mensagem
-                        data = "Horário não disponível"
-                        timestamp_selectors = [
-                            './/span[@data-testid="msg-meta"]',
-                            './/span[contains(@class, "timestamp")]',
-                            './/span[contains(@class, "time")]',
-                            './/div[contains(@class, "meta")]//span'
-                        ]
-                        
-                        for timestamp_selector in timestamp_selectors:
-                            try:
-                                timestamp_element = msg_element.find_element(By.XPATH, timestamp_selector)
-                                data = timestamp_element.text.strip()
-                                if data:
-                                    break
-                            except NoSuchElementException:
-                                continue
-                        
-                        # Criar objeto da mensagem com os campos corretos
-                        message_info = {
-                            "message": message_text,
-                            "data": data,
-                            "origem": origem
-                        }
-                        
-                        messages.append(message_info)
-                        
-                    except Exception as e:
-                        # Se houver erro ao processar uma mensagem, continuar com a próxima
-                        print(f"Erro ao processar mensagem: {str(e)}")
-                        continue
-                
-                print(f"Total de mensagens processadas: {len(messages)}")
-                return {
-                    "success": True,
-                    "contact_name": contact_name_text,
-                    "phone": phone,
-                    "messages": messages,
-                    "total_messages": len(messages)
-                }
-                
-            except NoSuchElementException as e:
-                print(f"Erro ao encontrar mensagens: {str(e)}")
-                return {
-                    "success": False,
-                    "error": "Não foi possível encontrar mensagens neste chat",
-                    "phone": phone,
-                    "contact_name": contact_name_text
-                }
-                
-        except NoSuchElementException as e:
-            print(f"Elemento não encontrado: {str(e)}")
-            webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
+
+            if not isinstance(messages, list):
+                messages = []
+
+            cleaned = []
+            for item in messages:
+                if not isinstance(item, dict):
+                    continue
+                cleaned.append(
+                    {
+                        "message": str(item.get("message") or "Mensagem não legível"),
+                        "data": str(item.get("data") or "Horário não disponível"),
+                        "origem": (
+                            "enviada"
+                            if str(item.get("origem") or "").strip().lower() == "enviada"
+                            else "recebida"
+                        ),
+                    }
+                )
+
+            print(f"Total de mensagens processadas: {len(cleaned)}")
             return {
-                "success": False,
-                "error": f"Elemento não encontrado - conversa inválida: {str(e)}",
-                "phone": phone
+                "success": True,
+                "contact_name": contact_name_text,
+                "phone": phone,
+                "messages": cleaned,
+                "total_messages": len(cleaned),
             }
+
         except Exception as e:
-            print(f"Erro geral: {str(e)}")
+            print(f"Erro geral: {e}")
+            try:
+                webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
+            except Exception:
+                pass
             return {
                 "success": False,
-                "error": f"Erro ao abrir conversa: {str(e)}",
-                "phone": phone
-            } 
+                "error": f"Erro ao abrir conversa: {e}",
+                "phone": phone,
+            }

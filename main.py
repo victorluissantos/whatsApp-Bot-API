@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, Query, Form, File, UploadFile
+from fastapi import FastAPI, Request, HTTPException, Query, Form, File, UploadFile, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1344,16 +1344,37 @@ async def get_message(phone: str = Query(..., description="Número de telefone d
         raise HTTPException(status_code=400, detail="WhatsApp não está conectado")
     
     try:
-        messages = Messages.Run()
-        result = messages.getMessages(navegador_local, phone)
-        
+        with whatsapp_send_lock:
+            messages = Messages.Run()
+            result = messages.getMessages(navegador_local, phone)
+
+        if not isinstance(result, dict):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Resposta inválida de getMessages: {type(result).__name__}",
+            )
+
         if result.get("success"):
-            return result
-        else:
-            raise HTTPException(status_code=404, detail=result.get("error", "Erro ao obter mensagens"))
-            
+            return {
+                "success": True,
+                "contact_name": result.get("contact_name") or f"Contato {phone}",
+                "phone": result.get("phone") or phone,
+                "messages": result.get("messages") or [],
+                "total_messages": int(result.get("total_messages") or 0),
+            }
+
+        raise HTTPException(
+            status_code=404,
+            detail=result.get("error") or "Erro ao obter mensagens",
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+        err_text = str(e).strip() or repr(e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro interno: {type(e).__name__}: {err_text}",
+        )
 
 
 @app.post("/reset", tags=["Sistema"])
@@ -1367,14 +1388,19 @@ async def reset_whatsapp():
         return {"success": False, "message": f"Erro ao recarregar: {str(e)}"}
 
 
-async def _schedule_container_restart():
-    await asyncio.sleep(1)
-    os.kill(1, signal.SIGTERM)
+def _do_container_restart():
+    time.sleep(1)
+    # Encerra o uvicorn; com `restart: always` o Docker sobe de novo.
+    try:
+        os.kill(os.getpid(), signal.SIGTERM)
+    except Exception:
+        os._exit(0)
 
 
 @app.post("/restartContainer", tags=["Sistema"])
-async def restart_container():
-    asyncio.create_task(_schedule_container_restart())
+async def restart_container(background_tasks: BackgroundTasks):
+    # BackgroundTasks (não create_task): create_task era cancelado ao fim do request.
+    background_tasks.add_task(_do_container_restart)
     return {
         "success": True,
         "message": "Container será reiniciado em instantes. Aguarde alguns segundos e recarregue a página.",
