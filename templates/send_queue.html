@@ -41,6 +41,7 @@
                     <option value="sent" {% if filters.status == 'sent' %}selected{% endif %}>Enviado</option>
                     <option value="failed" {% if filters.status == 'failed' %}selected{% endif %}>Falhou</option>
                     <option value="cancelled" {% if filters.status == 'cancelled' %}selected{% endif %}>Cancelado</option>
+                    <option value="deleted" {% if filters.status == 'deleted' %}selected{% endif %}>Excluído</option>
                 </select>
             </div>
             <div class="form-group">
@@ -105,8 +106,8 @@
                     </td>
                     <td class="result-cell">{{ item.result or '—' }}</td>
                     <td>
-                        {% if item.status == 'pending' %}
-                        <form class="inline-form" method="post" action="/send-queue/{{ item.job_id }}/cancel" onsubmit="return confirm('Cancelar o envio desta mensagem?');">
+                        {% if item.status != 'deleted' %}
+                        <form class="inline-form" method="post" action="/send-queue/{{ item.job_id }}/delete" onsubmit="return confirm('Excluir esta mensagem da fila? Ela deixará de contar como enviada (unic/triggers).');">
                             <input type="hidden" name="page" value="{{ page }}">
                             <input type="hidden" name="page_size" value="{{ page_size }}">
                             <input type="hidden" name="phone" value="{{ filters.phone }}">
@@ -114,10 +115,10 @@
                             <input type="hidden" name="status" value="{{ filters.status }}">
                             <input type="hidden" name="date_from" value="{{ filters.date_from }}">
                             <input type="hidden" name="date_to" value="{{ filters.date_to }}">
-                            <button type="submit" class="btn-danger btn-sm">Cancelar envio</button>
+                            <button type="submit" class="btn-danger btn-sm">Excluir</button>
                         </form>
                         {% else %}
-                        <small class="muted">{{ item.job_id[:8] }}…</small>
+                        <small class="muted">excluído</small>
                         {% endif %}
                     </td>
                 </tr>

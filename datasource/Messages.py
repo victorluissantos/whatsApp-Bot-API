@@ -113,13 +113,18 @@ class Run:
         }));
     """
 
-    def getMessages(self, navegador, phone):
+    def getMessages(self, navegador, phone, limit: int = 20):
         """
         Abre a conversa de um contato pelo número (via URL do WhatsApp Web)
         e extrai as mensagens da conversa.
         """
+        opened_conversation = False
         try:
             print(f"Iniciando busca de mensagens para o telefone: {phone}")
+            try:
+                limit = max(1, min(int(limit), 100))
+            except (TypeError, ValueError):
+                limit = 20
 
             telefone_digits = self._normalize_phone(phone)
             if not telefone_digits:
@@ -133,6 +138,7 @@ class Run:
             link = f"https://web.whatsapp.com/send?phone={telefone_digits}"
             navegador.get(link)
             print(f"[DEPURACAO] URL aberta: {link}")
+            opened_conversation = True
 
             WebDriverWait(navegador, 20).until(
                 EC.presence_of_element_located((By.ID, "app"))
@@ -211,7 +217,7 @@ class Run:
             time.sleep(1.5)
 
             try:
-                messages = navegador.execute_script(self._EXTRACT_MESSAGES_JS, 20) or []
+                messages = navegador.execute_script(self._EXTRACT_MESSAGES_JS, limit) or []
             except Exception as js_err:
                 print(f"Falha na extração JS de mensagens: {js_err}")
                 messages = []
@@ -246,12 +252,45 @@ class Run:
 
         except Exception as e:
             print(f"Erro geral: {e}")
-            try:
-                webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
-            except Exception:
-                pass
             return {
                 "success": False,
                 "error": f"Erro ao abrir conversa: {e}",
                 "phone": phone,
             }
+        finally:
+            # Abrir o chat marca como lido e deixa a UI travada na conversa —
+            # sempre tenta restaurar unread e voltar à lista (#pane-side).
+            if opened_conversation:
+                self._leave_conversation(navegador, restore_unread=True)
+
+    def _leave_conversation(self, navegador, restore_unread: bool = False) -> None:
+        """Sai da conversa aberta e restaura a lista lateral para o poller de triggers."""
+        if navegador is None:
+            return
+        try:
+            if restore_unread:
+                try:
+                    from selenium.webdriver.common.action_chains import ActionChains
+
+                    ActionChains(navegador).key_down(Keys.CONTROL).key_down(Keys.ALT).key_down(
+                        Keys.SHIFT
+                    ).send_keys("u").key_up(Keys.SHIFT).key_up(Keys.ALT).key_up(Keys.CONTROL).perform()
+                    time.sleep(0.15)
+                    print("[DEPURACAO] Chat marcado como não lido após getMessages")
+                except Exception as unread_err:
+                    print(f"[DEPURACAO] Falha ao restaurar unread após getMessages: {unread_err}")
+            try:
+                webdriver.ActionChains(navegador).send_keys(Keys.ESCAPE).perform()
+                time.sleep(0.1)
+            except Exception:
+                pass
+            try:
+                navegador.get("https://web.whatsapp.com/")
+                WebDriverWait(navegador, 15).until(
+                    EC.presence_of_element_located((By.ID, "app"))
+                )
+                time.sleep(0.4)
+            except Exception as home_err:
+                print(f"[DEPURACAO] Falha ao voltar para home após getMessages: {home_err}")
+        except Exception as e:
+            print(f"[DEPURACAO] Falha ao sair da conversa: {e}")

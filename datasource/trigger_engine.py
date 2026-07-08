@@ -18,15 +18,61 @@ _DEDUP_TTL_SECONDS = 60.0
 # Última lastMessage vista por chat (independente do cache unread)
 _TRIGGER_SEEN: dict[str, str] = {}
 _TRIGGER_BOOTSTRAPPED = False
+# Soft-delete (ou liberação de unique) pede reavaliação no próximo poll
+# mesmo se a lista de unread não mudou no DOM.
+_FORCE_RECALC = False
 
 
 def reset_baseline() -> None:
     """Chamar ao deslogar/reiniciar sessão WhatsApp."""
-    global _TRIGGER_BOOTSTRAPPED
+    global _TRIGGER_BOOTSTRAPPED, _FORCE_RECALC
     _TRIGGER_SEEN.clear()
     _TRIGGER_BOOTSTRAPPED = False
     _DEDUP.clear()
+    _FORCE_RECALC = False
     logger.info("Triggers: baseline reiniciado")
+
+
+def request_force_recalc() -> None:
+    """Próximo ciclo do poller deve reavaliar triggers mesmo sem mudança no pane."""
+    global _FORCE_RECALC
+    _FORCE_RECALC = True
+    logger.info("Triggers: force recalc solicitado")
+
+
+def consume_force_recalc() -> bool:
+    """Retorna e limpa o flag de reavaliação forçada."""
+    global _FORCE_RECALC
+    if not _FORCE_RECALC:
+        return False
+    _FORCE_RECALC = False
+    return True
+
+
+def forget_chat(phone: Optional[str] = None, name: Optional[str] = None) -> None:
+    """
+    Remove chat do baseline/dedup para que a próxima última mensagem volte a ser avaliada.
+    Usado após soft-delete na fila (reenvio / re-disparo de trigger).
+    """
+    digits = re.sub(r"\D", "", str(phone or ""))
+    variants: set[str] = set()
+    if digits:
+        variants.add(digits)
+        if not digits.startswith("55") and len(digits) >= 10:
+            variants.add("55" + digits)
+        if digits.startswith("55") and len(digits) > 12:
+            variants.add(digits[2:])
+    for d in variants:
+        _TRIGGER_SEEN.pop(f"phone:{d}", None)
+    name_s = (name or "").strip()
+    if name_s:
+        _TRIGGER_SEEN.pop(f"name:{name_s}", None)
+    for dedup_key in list(_DEDUP.keys()):
+        phone_part = dedup_key.split("|", 1)[0]
+        if phone_part in variants:
+            _DEDUP.pop(dedup_key, None)
+    request_force_recalc()
+    logger.info("Triggers: baseline esquecido para phone=%s name=%s", phone, name)
 
 
 def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], nav=None) -> dict:
@@ -55,22 +101,27 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
         )
         # Continua o fluxo normalmente para avaliar unread existentes.
 
-    changed = diff_changed_chats(new_chats)
-    stats["changed"] = len(changed)
-    if not changed:
+    # Avalia unread atuais + chats com lastMessage nova. Unread parado após
+    # soft-delete também precisa ser reavaliado (não só "mensagem mudou").
+    to_process = chats_to_evaluate(new_chats)
+    stats["changed"] = len(to_process)
+    if not to_process:
         _sync_seen_from_chats(new_chats)
         return stats
 
     active_triggers = triggers_store.list_triggers(mgd, enabled_only=True)
     if not active_triggers:
-        logger.debug("Triggers: %s chat(s) mudaram, mas nenhum trigger ativo", len(changed))
+        logger.debug("Triggers: %s chat(s) a avaliar, mas nenhum trigger ativo", len(to_process))
         _sync_seen_from_chats(new_chats)
         return stats
 
     now = now_local()
     messages_runner = Messages.Run() if nav is not None else None
+    # Chats que devem continuar elegíveis no próximo ciclo (unique bloqueado /
+    # falha). Removidos DEPOIS de _sync_seen_from_chats.
+    keep_unseen: set[str] = set()
 
-    for chat in changed:
+    for chat in to_process:
         message_text = (chat.get("lastMessage") or "").strip()
         if not message_text or message_text == "Sem mensagem":
             stats["skipped"] += 1
@@ -88,22 +139,16 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
             stats["skipped"] += 1
             continue
 
+        chat_key = _chat_key(chat)
         dedup_key = f"{phone}|{message_text}"
         if _recently_processed(dedup_key):
             stats["skipped"] += 1
             continue
-        if messages_runner is not None and not _is_latest_message_incoming(
-            messages_runner, nav, phone, message_text
-        ):
-            logger.info(
-                "Triggers: chat %s msg=%r ignorado (última mensagem não recebida)",
-                phone,
-                message_text[:80],
-            )
-            stats["skipped"] += 1
-            continue
 
-        fired_for_chat = False
+        contact_key = triggers_store.contact_key(phone, chat.get("name"))
+        # Descobre matches (schedule+pattern) e se unique já bloqueia — ANTES de abrir o chat.
+        candidates: list[dict] = []
+        unique_blocked_only = False
         for trigger in active_triggers:
             if not triggers_store.is_within_schedule(trigger.get("schedule") or {}, now):
                 logger.debug("Trigger %r fora do horário", trigger.get("name"))
@@ -116,16 +161,63 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
                     message_text[:80],
                 )
                 continue
+            unique_cfg = trigger.get("unique") or {}
+            if unique_cfg.get("enabled") and triggers_store.has_execution_claim(
+                mgd,
+                trigger["id"],
+                contact_key,
+                unique_cfg,
+                now,
+            ):
+                # Unique só libera no soft-delete explícito do job — NÃO reabrir
+                # por existência de job deleted (senão reenvia o dia inteiro).
+                logger.info(
+                    "Trigger %r já executado (unique) para %s",
+                    trigger.get("name"),
+                    phone,
+                )
+                unique_blocked_only = True
+                stats["skipped"] += 1
+                continue
+            candidates.append(trigger)
 
+        if not candidates:
+            if unique_blocked_only and chat_key:
+                # Mantém elegível: soft-delete pode liberar o unique e o mesmo unread reaparece.
+                keep_unseen.add(chat_key)
+            else:
+                logger.info(
+                    "Triggers: chat %s msg=%r — nenhum trigger disparou (pattern/horário/unique)",
+                    phone,
+                    message_text[:80],
+                )
+            continue
+
+        if messages_runner is not None:
+            ok_chat, chat_skip_reason = _chat_allows_trigger_reply(
+                messages_runner, nav, mgd, phone, message_text
+            )
+            if not ok_chat:
+                logger.info(
+                    "Triggers: chat %s msg=%r ignorado (%s)",
+                    phone,
+                    message_text[:80],
+                    chat_skip_reason,
+                )
+                stats["skipped"] += 1
+                continue
+
+        fired_for_chat = False
+        for trigger in candidates:
             stats["matched"] += 1
             trigger_id = trigger["id"]
-            contact_key = triggers_store.contact_key(phone, chat.get("name"))
+            unique_cfg = trigger.get("unique") or {}
 
             if not triggers_store.try_claim_execution(
                 mgd,
                 trigger_id,
                 contact_key,
-                trigger.get("unique") or {},
+                unique_cfg,
                 now,
             ):
                 logger.info(
@@ -134,7 +226,17 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
                     phone,
                 )
                 stats["skipped"] += 1
+                if chat_key:
+                    keep_unseen.add(chat_key)
                 continue
+
+            enqueue_kwargs: dict = {}
+            if unique_cfg.get("enabled"):
+                enqueue_kwargs["trigger_id"] = trigger_id
+                enqueue_kwargs["contact_key"] = contact_key
+                enqueue_kwargs["scope_key"] = triggers_store.unique_scope_key(
+                    str(unique_cfg.get("scope") or "day"), now
+                )
 
             try:
                 job_id = async_send_queue.enqueue_job(
@@ -143,6 +245,7 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
                     trigger["reply_message"],
                     unic_sent=False,
                     unRead=True,
+                    **enqueue_kwargs,
                 )
                 logger.info(
                     "Trigger %r disparado para %s (job %s) msg=%r",
@@ -157,20 +260,24 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
             except Exception:
                 stats["errors"] += 1
                 triggers_store.release_execution_claim(
-                    mgd, trigger_id, contact_key, trigger.get("unique") or {}, now
+                    mgd, trigger_id, contact_key, unique_cfg, now
                 )
                 logger.exception(
                     "Triggers: falha ao enfileirar resposta do trigger %s", trigger_id
                 )
 
-        if not fired_for_chat and changed:
+        if not fired_for_chat:
             logger.info(
                 "Triggers: chat %s msg=%r — nenhum trigger disparou (pattern/horário/unique)",
                 phone,
                 message_text[:80],
             )
+            if chat_key:
+                keep_unseen.add(chat_key)
 
     _sync_seen_from_chats(new_chats)
+    for key in keep_unseen:
+        _TRIGGER_SEEN.pop(key, None)
     return stats
 
 
@@ -191,6 +298,29 @@ def diff_changed_chats(new_chats: list[dict]) -> list[dict]:
             changed.append(chat)
 
     return changed
+
+
+def chats_to_evaluate(new_chats: list[dict]) -> list[dict]:
+    """
+    Unread atuais + chats com mensagem nova.
+    Assim, após soft-delete liberar unique, o mesmo "Bom dia" unread re-dispara
+    sem precisar de outra mensagem no pane.
+    """
+    by_key: dict[str, dict] = {}
+    for chat in diff_changed_chats(new_chats):
+        key = _chat_key(chat)
+        if key:
+            by_key[key] = chat
+    for chat in new_chats:
+        if _unread_int(chat) <= 0:
+            continue
+        last_msg = (chat.get("lastMessage") or "").strip()
+        if not last_msg or last_msg == "Sem mensagem":
+            continue
+        key = _chat_key(chat)
+        if key:
+            by_key[key] = chat
+    return list(by_key.values())
 
 
 def _sync_seen_from_chats(chats: list[dict]) -> None:
@@ -237,36 +367,51 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip()).lower()
 
 
-def _is_latest_message_incoming(messages_runner, nav, phone: str, preview_text: str) -> bool:
+def _chat_allows_trigger_reply(
+    messages_runner, nav, mgd, phone: str, preview_text: str
+) -> tuple[bool, str]:
     """
-    Confirma que a última mensagem relevante do chat é recebida.
-    Usa getMessages para evitar disparo em mensagem enviada pelo próprio bot/usuário.
-    Se não conseguir abrir o histórico, não bloqueia o trigger (fail-open).
+    Abre o histórico uma vez e valida:
+    1) a mensagem do unread (preview) é recebida;
+    2) nenhuma mensagem 'enviada' no chat veio de fora do sistema (humano).
+
+    Retorna (True, "") se pode enfileirar; (False, motivo) caso contrário.
+    Se não conseguir abrir o histórico, fail-open (True) — mesmo padrão anterior.
     """
     try:
-        result = messages_runner.getMessages(nav, phone)
+        # Mais histórico: detectar humano no meio da conversa, não só as últimas 20.
+        result = messages_runner.getMessages(nav, phone, limit=50)
     except Exception:
         logger.exception(
-            "Triggers: falha ao abrir histórico para validar origem (%s); seguindo sem bloqueio",
+            "Triggers: falha ao abrir histórico para validar chat (%s); seguindo sem bloqueio",
             phone,
         )
-        return True
+        return True, ""
     if not result or not result.get("success"):
         logger.warning(
-            "Triggers: não foi possível validar origem em %s (%s); seguindo sem bloqueio",
+            "Triggers: não foi possível validar chat em %s (%s); seguindo sem bloqueio",
             phone,
             (result or {}).get("error") if isinstance(result, dict) else "sem resultado",
         )
-        return True
+        return True, ""
     messages = result.get("messages") or []
     if not messages:
-        return True
+        return True, ""
 
+    if not _preview_is_incoming(messages, preview_text):
+        return False, "última mensagem não recebida"
+
+    if _chat_has_human_outbound(mgd, phone, messages):
+        return False, "conversa com atendimento humano (mensagem enviada fora do sistema)"
+
+    return True, ""
+
+
+def _preview_is_incoming(messages: list, preview_text: str) -> bool:
     preview_norm = _normalize_text(preview_text)
     if not preview_norm:
         return True
 
-    # Varre de trás para frente e tenta casar com o preview do painel.
     for msg in reversed(messages):
         text_norm = _normalize_text(str(msg.get("message") or ""))
         if not text_norm:
@@ -274,9 +419,25 @@ def _is_latest_message_incoming(messages_runner, nav, phone: str, preview_text: 
         if preview_norm in text_norm or text_norm in preview_norm:
             return str(msg.get("origem") or "").strip().lower() == "recebida"
 
-    # Fallback: sem match textual claro, exige que a última mensagem do chat seja recebida.
     last_origin = str(messages[-1].get("origem") or "").strip().lower()
     return last_origin == "recebida"
+
+
+def _chat_has_human_outbound(mgd, phone: str, messages: list) -> bool:
+    """
+    True se existe mensagem 'enviada' no WhatsApp que não está na fila/histórico
+    do sistema — indica que um humano respondeu no celular ou Web.
+    """
+    for msg in messages:
+        if str(msg.get("origem") or "").strip().lower() != "enviada":
+            continue
+        text = str(msg.get("message") or "").strip()
+        if not text or text in ("Mensagem não legível", "[Áudio]", "[Mídia]"):
+            # Sem texto confiável: trata como possível humano e bloqueia.
+            return True
+        if not async_send_queue.is_system_outbound_message(mgd, phone, text):
+            return True
+    return False
 
 
 def _recently_processed(key: str) -> bool:

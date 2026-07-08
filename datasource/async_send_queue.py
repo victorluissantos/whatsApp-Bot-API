@@ -72,19 +72,43 @@ def _publish_to_rabbit(payload: dict) -> None:
     )
 
 
-def enqueue_job(mgd, phone: str, message: str, unic_sent: bool, unRead: bool = False) -> str:
+ACTIVE_QUEUE_STATUSES = ("sent",)
+
+
+def _normalize_legacy_phone(phone: str) -> str:
+    digits = "".join(filter(str.isdigit, str(phone or "")))
+    if not digits.startswith("55"):
+        digits = "55" + digits
+    return "+" + digits
+
+
+def enqueue_job(
+    mgd,
+    phone: str,
+    message: str,
+    unic_sent: bool,
+    unRead: bool = False,
+    trigger_id: Optional[str] = None,
+    contact_key: Optional[str] = None,
+    scope_key: Optional[str] = None,
+) -> str:
     job_id = str(uuid.uuid4())
-    _queue(mgd).insert_one(
-        {
-            "job_id": job_id,
-            "phone": phone,
-            "message": message,
-            "unic_sent": bool(unic_sent),
-            "unRead": bool(unRead),
-            "status": "pending",
-            "created_at": datetime.utcnow(),
-        }
-    )
+    doc: dict[str, Any] = {
+        "job_id": job_id,
+        "phone": phone,
+        "message": message,
+        "unic_sent": bool(unic_sent),
+        "unRead": bool(unRead),
+        "status": "pending",
+        "created_at": datetime.utcnow(),
+    }
+    if trigger_id:
+        doc["trigger_id"] = str(trigger_id)
+    if contact_key:
+        doc["contact_key"] = str(contact_key)
+    if scope_key:
+        doc["scope_key"] = str(scope_key)
+    _queue(mgd).insert_one(doc)
     try:
         _publish_to_rabbit(
             {
@@ -169,9 +193,161 @@ def cancel_job(mgd, job_id: str) -> tuple[bool, str]:
     return False, f"Não é possível cancelar job com status '{current}'"
 
 
+def _soft_delete_legacy_history(mgd, phone: str, message: str) -> None:
+    """Marca histórico legado correspondente como deleted (unic_sent deixa de ver como Enviado)."""
+    legacy_phone = _normalize_legacy_phone(phone)
+    now = datetime.utcnow()
+    try:
+        mgd.collection.update_many(
+            {"telefone": legacy_phone, "mensagem": message, "status": "Enviado"},
+            {"$set": {"status": "deleted", "deleted_at": now}},
+        )
+    except Exception as e:
+        logger.warning("Falha ao soft-delete no histórico legado: %s", e)
+
+
+def _release_trigger_claim_from_job(mgd, doc: dict) -> None:
+    trigger_id = (doc.get("trigger_id") or "").strip()
+    contact_key = (doc.get("contact_key") or "").strip()
+    scope_key = (doc.get("scope_key") or "").strip()
+    phone = str(doc.get("phone") or "")
+    try:
+        from datasource import triggers as triggers_store
+        from datasource import trigger_engine
+
+        if trigger_id:
+            # Só este trigger — não zera unique dos outros (Ajuda, Encerramento, etc.).
+            if contact_key and scope_key:
+                triggers_store.release_execution_claim_by_keys(
+                    mgd, trigger_id, contact_key, scope_key
+                )
+            released = triggers_store.release_execution_claims_for_trigger_contact(
+                mgd, trigger_id, phone
+            )
+            if released:
+                logger.info(
+                    "Unique liberado do trigger %s após delete (%s claim(s), phone=%s)",
+                    trigger_id,
+                    released,
+                    phone,
+                )
+        else:
+            # Job antigo sem metadados: fallback amplo por telefone.
+            released = triggers_store.release_execution_claims_for_phone(mgd, phone)
+            if released:
+                logger.info(
+                    "Unique liberado por telefone após delete (%s claim(s), phone=%s)",
+                    released,
+                    phone,
+                )
+        # Esquece baseline + force recalc no próximo poll (mesmo se unread não mudar).
+        trigger_engine.forget_chat(phone)
+    except Exception as e:
+        logger.warning("Falha ao liberar unique do trigger após delete: %s", e)
+
+
+def delete_job(mgd, job_id: str) -> tuple[bool, str]:
+    """Soft-delete: status deleted. Registro permanece no histórico; dedup/worker/triggers ignoram."""
+    existing = _queue(mgd).find_one({"job_id": job_id})
+    if not existing:
+        return False, "Job não encontrado"
+    current = str(existing.get("status", ""))
+    if current == "deleted":
+        # Idempotente: re-libera unique/baseline (útil se delete anterior foi parcial).
+        _soft_delete_legacy_history(
+            mgd, str(existing.get("phone") or ""), str(existing.get("message") or "")
+        )
+        _release_trigger_claim_from_job(mgd, existing)
+        return True, "Job já estava excluído (unique/baseline reavaliados)"
+    doc = _queue(mgd).find_one_and_update(
+        {"job_id": job_id, "status": {"$ne": "deleted"}},
+        {
+            "$set": {
+                "status": "deleted",
+                "result": "Excluído pelo usuário",
+                "deleted_at": datetime.utcnow(),
+                "processed_at": datetime.utcnow(),
+            }
+        },
+    )
+    if not doc:
+        return False, "Não foi possível excluir o job"
+    _soft_delete_legacy_history(mgd, str(doc.get("phone") or ""), str(doc.get("message") or ""))
+    _release_trigger_claim_from_job(mgd, doc)
+    return True, "Job excluído com sucesso"
+
+
+def has_active_queue_message(mgd, phone: str, message: str) -> bool:
+    """True se existe job sent (não deleted) com mesmo phone+message."""
+    digits = "".join(filter(str.isdigit, str(phone or "")))
+    if not digits:
+        return False
+    return (
+        _queue(mgd).find_one(
+            {
+                "phone": {"$regex": re.escape(digits)},
+                "message": message,
+                "status": {"$in": list(ACTIVE_QUEUE_STATUSES)},
+            },
+            {"_id": 1},
+        )
+        is not None
+    )
+
+
+# Status de jobs que contam como “enviados pelo sistema” (inclui soft-delete:
+# a bolha ainda está no WhatsApp, mas foi o bot quem enviou).
+SYSTEM_OUTBOUND_QUEUE_STATUSES = ("sent", "deleted", "processing")
+
+
+def _normalize_message_for_match(text: str) -> str:
+    s = re.sub(r"\s+", " ", (text or "").strip()).lower()
+    # Remove formatação WhatsApp comum (*, _, ~) para casar preview vs fila.
+    s = re.sub(r"[*_~]", "", s)
+    return s
+
+
+def is_system_outbound_message(mgd, phone: str, message: str) -> bool:
+    """
+    True se a mensagem enviada consta como saída do sistema (fila ou histórico legado).
+    Usado para detectar atendimento humano na conversa.
+    """
+    digits = "".join(filter(str.isdigit, str(phone or "")))
+    if not digits or not (message or "").strip():
+        return False
+    target = _normalize_message_for_match(message)
+
+    for doc in _queue(mgd).find(
+        {
+            "phone": {"$regex": re.escape(digits)},
+            "status": {"$in": list(SYSTEM_OUTBOUND_QUEUE_STATUSES)},
+        },
+        {"message": 1},
+    ):
+        if _normalize_message_for_match(str(doc.get("message") or "")) == target:
+            return True
+
+    try:
+        legacy_phone = _normalize_legacy_phone(phone)
+        for doc in mgd.collection.find(
+            {
+                "telefone": legacy_phone,
+                "status": {"$in": ["Enviado", "deleted"]},
+            },
+            {"mensagem": 1},
+        ):
+            if _normalize_message_for_match(str(doc.get("mensagem") or "")) == target:
+                return True
+    except Exception as e:
+        logger.debug("Checagem legado em is_system_outbound_message: %s", e)
+
+    return False
+
+
 def finalize_job(mgd, job_id: str, success: bool, result: str) -> None:
+    """Finaliza job; não sobrescreve se já estiver deleted."""
     _queue(mgd).update_one(
-        {"job_id": job_id},
+        {"job_id": job_id, "status": {"$ne": "deleted"}},
         {
             "$set": {
                 "status": "sent" if success else "failed",
@@ -322,5 +498,6 @@ def list_queue_jobs_desc(
         doc["created_at"] = _iso_utc(doc.get("created_at"))
         doc["started_at"] = _iso_utc(doc.get("started_at"))
         doc["processed_at"] = _iso_utc(doc.get("processed_at"))
+        doc["deleted_at"] = _iso_utc(doc.get("deleted_at"))
         items.append(doc)
     return items, total

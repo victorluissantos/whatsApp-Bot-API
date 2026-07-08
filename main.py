@@ -167,11 +167,12 @@ class SendQueueJobItem(BaseModel):
     message: str = Field(..., description="Texto enfileirado")
     unic_sent: bool = Field(False, description="Flag unic_sent no envio")
     unRead: bool = Field(False, description="Marca o chat como não lido após o envio")
-    status: str = Field(..., description="pending | processing | sent | failed | cancelled")
+    status: str = Field(..., description="pending | processing | sent | failed | cancelled | deleted")
     created_at: Optional[str] = Field(None, description="UTC ISO quando entrou na fila")
     started_at: Optional[str] = Field(None, description="UTC ISO quando o worker começou")
     processed_at: Optional[str] = Field(None, description="UTC ISO quando finalizou")
     result: Optional[str] = Field(None, description="Resultado do envio (ex.: Enviado) ou erro")
+    deleted_at: Optional[str] = Field(None, description="UTC ISO quando soft-deleted")
 
 
 class SendQueueListResponse(BaseModel):
@@ -582,7 +583,10 @@ def _run_unread_pane_cache_watcher():
                 time.sleep(interval)
                 continue
             fp = unread_pane_cache.fingerprint_for_chats(raw)
-            if unread_pane_cache.update_if_changed(raw, fp):
+            pane_changed = unread_pane_cache.update_if_changed(raw, fp)
+            # Soft-delete/unique liberado: reavalia mesmo com pane estável.
+            force_triggers = trigger_engine.consume_force_recalc()
+            if pane_changed:
                 url = async_queue.get_delivery_webhook_url(mgd)
                 if url:
                     async_queue.notify_delivery_webhook(
@@ -596,10 +600,26 @@ def _run_unread_pane_cache_watcher():
                             "total": len(raw),
                         },
                     )
+            # Sempre avalia triggers quando há unread (ou force). Unique/dedup
+            # impedem reenvio; antes o motor só rodava se o fingerprint mudasse,
+            # então soft-delete + mensagem parada nunca re-disparava.
+            has_unread = any(
+                str(c.get("unreadCount") or "0").strip() not in ("", "0")
+                for c in raw
+            )
+            if pane_changed or force_triggers or has_unread:
                 try:
-                    stats = trigger_engine.process_unread_changes(mgd, old_chats, raw, nav=nav)
-                    if stats.get("queued"):
-                        logging.info("Triggers: %s", stats)
+                    stats = trigger_engine.process_unread_changes(
+                        mgd, old_chats, raw, nav=nav
+                    )
+                    if stats.get("queued") or force_triggers:
+                        logging.info(
+                            "Triggers: %s (pane_changed=%s force=%s unread=%s)",
+                            stats,
+                            pane_changed,
+                            force_triggers,
+                            has_unread,
+                        )
                 except Exception:
                     logging.exception("Erro no motor de triggers")
         except Exception:
@@ -1164,18 +1184,17 @@ async def send_queue_page(
     )
 
 
-@app.post("/send-queue/{job_id}/cancel", include_in_schema=False)
-async def send_queue_cancel_form(
-    job_id: str,
-    page: int = Form(1),
-    page_size: int = Form(20),
-    phone: str = Form(""),
-    message: str = Form(""),
-    status: str = Form(""),
-    date_from: str = Form(""),
-    date_to: str = Form(""),
-):
-    ok, detail = async_queue.cancel_job(mgd, job_id)
+def _send_queue_redirect_params(
+    page: int,
+    page_size: int,
+    phone: str,
+    message: str,
+    status: str,
+    date_from: str,
+    date_to: str,
+    ok: bool,
+    detail: str,
+) -> dict[str, str | int]:
     params: dict[str, str | int] = {
         "page": max(1, page),
         "page_size": max(1, min(100, page_size)),
@@ -1191,6 +1210,42 @@ async def send_queue_cancel_form(
     if date_to.strip():
         params["date_to"] = date_to.strip()
     params["msg" if ok else "error"] = detail
+    return params
+
+
+@app.post("/send-queue/{job_id}/cancel", include_in_schema=False)
+async def send_queue_cancel_form(
+    job_id: str,
+    page: int = Form(1),
+    page_size: int = Form(20),
+    phone: str = Form(""),
+    message: str = Form(""),
+    status: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+):
+    ok, detail = async_queue.cancel_job(mgd, job_id)
+    params = _send_queue_redirect_params(
+        page, page_size, phone, message, status, date_from, date_to, ok, detail
+    )
+    return RedirectResponse(url=f"/send-queue?{urlencode(params)}", status_code=303)
+
+
+@app.post("/send-queue/{job_id}/delete", include_in_schema=False)
+async def send_queue_delete_form(
+    job_id: str,
+    page: int = Form(1),
+    page_size: int = Form(20),
+    phone: str = Form(""),
+    message: str = Form(""),
+    status: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+):
+    ok, detail = async_queue.delete_job(mgd, job_id)
+    params = _send_queue_redirect_params(
+        page, page_size, phone, message, status, date_from, date_to, ok, detail
+    )
     return RedirectResponse(url=f"/send-queue?{urlencode(params)}", status_code=303)
 
 
@@ -1235,6 +1290,12 @@ class SendQueueCancelResponse(BaseModel):
     message: str = Field(..., description="Detalhe do resultado")
 
 
+class SendQueueDeleteResponse(BaseModel):
+    success: bool = Field(..., description="Soft-delete aplicado")
+    job_id: str = Field(..., description="ID do job")
+    message: str = Field(..., description="Detalhe do resultado")
+
+
 @app.post("/sendQueue/{job_id}/cancel", tags=["Mensagens"], response_model=SendQueueCancelResponse)
 async def cancel_send_queue_job(job_id: str):
     """Cancela um job pendente para que não seja enviado pelo worker."""
@@ -1242,6 +1303,15 @@ async def cancel_send_queue_job(job_id: str):
     if not ok:
         raise HTTPException(status_code=400, detail=detail)
     return SendQueueCancelResponse(success=True, job_id=job_id, message=detail)
+
+
+@app.post("/sendQueue/{job_id}/delete", tags=["Mensagens"], response_model=SendQueueDeleteResponse)
+async def delete_send_queue_job(job_id: str):
+    """Soft-delete: marca o job como deleted. Dedup/worker/triggers passam a ignorá-lo."""
+    ok, detail = async_queue.delete_job(mgd, job_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=detail)
+    return SendQueueDeleteResponse(success=True, job_id=job_id, message=detail)
 
 
 @app.get("/getChats", tags=["Chats"], response_model=GetChatsResponse)

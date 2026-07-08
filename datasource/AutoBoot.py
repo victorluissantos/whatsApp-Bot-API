@@ -30,7 +30,8 @@ class WhatsAppBot:
 
 		print(f"🔍 Iniciando envio para: {telefone}")
 
-		# Verificar se a mensagem já foi enviada para este número (agora opcional)
+		# Verificar se a mensagem já foi enviada para este número (agora opcional).
+		# Status deleted é ignorado (soft-delete = como se não existisse).
 		if unic_sent:
 			mensagem_existente = self.mongo.collection.find_one({
 				"telefone": telefone,
@@ -41,6 +42,15 @@ class WhatsAppBot:
 			if mensagem_existente:
 				print(f"📌 Mensagem já enviada para {telefone}, ignorando envio.")
 				return "Já enviada"
+
+			try:
+				from datasource import async_send_queue as async_queue
+
+				if async_queue.has_active_queue_message(self.mongo, telefone, message):
+					print(f"📌 Mensagem já na fila ativa para {telefone}, ignorando envio.")
+					return "Já enviada"
+			except Exception as queue_err:
+				print(f"[DEPURACAO] Checagem na fila falhou ({queue_err}); seguindo só com histórico legado")
 
 		try:
 			import time
@@ -170,8 +180,18 @@ class WhatsAppBot:
 			err_preview = str(e).replace("\n", " ")[:180]
 			status = f"Erro ao enviar: {err_preview}"
 
-		# Volta para a home
-		webdriver.ActionChains(self.navegador).send_keys(Keys.ESCAPE).perform()
+		# Volta para a home / lista lateral (poller de triggers depende do #pane-side)
+		try:
+			webdriver.ActionChains(self.navegador).send_keys(Keys.ESCAPE).perform()
+		except Exception:
+			pass
+		try:
+			self.navegador.get("https://web.whatsapp.com/")
+			WebDriverWait(self.navegador, 15).until(
+				EC.presence_of_element_located((By.ID, "app"))
+			)
+		except Exception as home_err:
+			print(f"[DEPURACAO] Falha ao voltar para home após envio: {home_err}")
 
 		# Persistência no MongoDB
 		self.mongo.collection.insert_one({

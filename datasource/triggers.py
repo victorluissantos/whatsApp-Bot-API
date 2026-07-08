@@ -282,6 +282,83 @@ def try_claim_execution(
         return False
 
 
+def has_execution_claim(
+    mgd,
+    trigger_id: str,
+    contact_key: str,
+    unique: dict,
+    now: datetime,
+) -> bool:
+    """True se já existe claim de unique para o escopo atual (sem inserir)."""
+    if not unique.get("enabled"):
+        return False
+    scope_key = unique_scope_key(str(unique.get("scope") or "day"), now)
+    return (
+        _exec_coll(mgd).find_one(
+            {
+                "trigger_id": trigger_id,
+                "contact_key": contact_key,
+                "scope_key": scope_key,
+            },
+            {"_id": 1},
+        )
+        is not None
+    )
+
+
+def release_execution_claim_by_keys(
+    mgd,
+    trigger_id: str,
+    contact_key: str,
+    scope_key: str,
+) -> None:
+    """Remove claim de unique pelos campos gravados no job da fila."""
+    if not (trigger_id and contact_key and scope_key):
+        return
+    _exec_coll(mgd).delete_one(
+        {"trigger_id": trigger_id, "contact_key": contact_key, "scope_key": scope_key}
+    )
+
+
+def _phone_contact_keys(phone: str) -> set[str]:
+    digits = re.sub(r"\D", "", str(phone or ""))
+    if not digits:
+        return set()
+    keys = {digits}
+    if digits.startswith("55") and len(digits) > 11:
+        keys.add(digits[2:])
+    elif not digits.startswith("55") and len(digits) >= 10:
+        keys.add("55" + digits)
+    return keys
+
+
+def release_execution_claims_for_phone(mgd, phone: str) -> int:
+    """
+    Libera claims de unique para um telefone (fallback só para jobs sem trigger_id).
+    Preferir release_execution_claims_for_trigger_contact quando houver trigger_id.
+    """
+    keys = _phone_contact_keys(phone)
+    if not keys:
+        return 0
+    result = _exec_coll(mgd).delete_many({"contact_key": {"$in": list(keys)}})
+    return int(result.deleted_count or 0)
+
+
+def release_execution_claims_for_trigger_contact(
+    mgd, trigger_id: str, phone: str
+) -> int:
+    """Libera claims de um trigger específico para o telefone (todas as scopes)."""
+    if not (trigger_id or "").strip():
+        return 0
+    keys = _phone_contact_keys(phone)
+    if not keys:
+        return 0
+    result = _exec_coll(mgd).delete_many(
+        {"trigger_id": str(trigger_id).strip(), "contact_key": {"$in": list(keys)}}
+    )
+    return int(result.deleted_count or 0)
+
+
 def release_execution_claim(
     mgd,
     trigger_id: str,
@@ -293,9 +370,7 @@ def release_execution_claim(
     if not unique.get("enabled"):
         return
     scope_key = unique_scope_key(str(unique.get("scope") or "day"), now)
-    _exec_coll(mgd).delete_one(
-        {"trigger_id": trigger_id, "contact_key": contact_key, "scope_key": scope_key}
-    )
+    release_execution_claim_by_keys(mgd, trigger_id, contact_key, scope_key)
 
 
 def validate_trigger_pattern(pattern: str) -> None:
