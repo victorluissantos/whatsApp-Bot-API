@@ -8,6 +8,7 @@ from typing import Optional
 
 from datasource import async_send_queue
 from datasource import Messages
+from datasource import AutoBoot
 from datasource import triggers as triggers_store
 from datasource.app_timezone import now_local
 
@@ -193,85 +194,46 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
                 )
             continue
 
-        if messages_runner is not None:
-            ok_chat, chat_skip_reason = _chat_allows_trigger_reply(
-                messages_runner, nav, mgd, phone, message_text
+        if messages_runner is None or nav is None:
+            # Sem browser: só enfileira no Rabbit (API/async legado).
+            fired_for_chat = _enqueue_candidates(
+                mgd,
+                phone,
+                contact_key,
+                candidates,
+                message_text,
+                now,
+                stats,
+                dedup_key,
+                chat_key,
+                keep_unseen,
             )
-            if not ok_chat:
+            if not fired_for_chat:
                 logger.info(
-                    "Triggers: chat %s msg=%r ignorado (%s)",
+                    "Triggers: chat %s msg=%r — nenhum trigger disparou (pattern/horário/unique)",
                     phone,
                     message_text[:80],
-                    chat_skip_reason,
                 )
-                stats["skipped"] += 1
-                continue
-
-        fired_for_chat = False
-        for trigger in candidates:
-            stats["matched"] += 1
-            trigger_id = trigger["id"]
-            unique_cfg = trigger.get("unique") or {}
-
-            if not triggers_store.try_claim_execution(
-                mgd,
-                trigger_id,
-                contact_key,
-                unique_cfg,
-                now,
-            ):
-                logger.info(
-                    "Trigger %r já executado (unique) para %s",
-                    trigger.get("name"),
-                    phone,
-                )
-                stats["skipped"] += 1
                 if chat_key:
                     keep_unseen.add(chat_key)
-                continue
+            continue
 
-            enqueue_kwargs: dict = {}
-            if unique_cfg.get("enabled"):
-                enqueue_kwargs["trigger_id"] = trigger_id
-                enqueue_kwargs["contact_key"] = contact_key
-                enqueue_kwargs["scope_key"] = triggers_store.unique_scope_key(
-                    str(unique_cfg.get("scope") or "day"), now
-                )
-
-            try:
-                job_id = async_send_queue.enqueue_job(
-                    mgd,
-                    phone,
-                    trigger["reply_message"],
-                    unic_sent=False,
-                    unRead=True,
-                    **enqueue_kwargs,
-                )
-                logger.info(
-                    "Trigger %r disparado para %s (job %s) msg=%r",
-                    trigger.get("name"),
-                    phone,
-                    job_id,
-                    message_text[:80],
-                )
-                stats["queued"] += 1
-                fired_for_chat = True
-                _mark_processed(dedup_key)
-            except Exception:
-                stats["errors"] += 1
-                triggers_store.release_execution_claim(
-                    mgd, trigger_id, contact_key, unique_cfg, now
-                )
-                logger.exception(
-                    "Triggers: falha ao enfileirar resposta do trigger %s", trigger_id
-                )
-
+        # Uma abertura: validar + enviar no mesmo chat (sem RabbitMQ reabrir).
+        fired_for_chat = _validate_and_send_inline(
+            messages_runner,
+            nav,
+            mgd,
+            phone,
+            message_text,
+            contact_key,
+            candidates,
+            now,
+            stats,
+            dedup_key,
+            chat_key,
+            keep_unseen,
+        )
         if not fired_for_chat:
-            logger.info(
-                "Triggers: chat %s msg=%r — nenhum trigger disparou (pattern/horário/unique)",
-                phone,
-                message_text[:80],
-            )
             if chat_key:
                 keep_unseen.add(chat_key)
 
@@ -279,6 +241,238 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
     for key in keep_unseen:
         _TRIGGER_SEEN.pop(key, None)
     return stats
+
+
+def _enqueue_candidates(
+    mgd,
+    phone: str,
+    contact_key: str,
+    candidates: list[dict],
+    message_text: str,
+    now,
+    stats: dict,
+    dedup_key: str,
+    chat_key: str,
+    keep_unseen: set[str],
+) -> bool:
+    fired_for_chat = False
+    for trigger in candidates:
+        stats["matched"] += 1
+        trigger_id = trigger["id"]
+        unique_cfg = trigger.get("unique") or {}
+
+        if not triggers_store.try_claim_execution(
+            mgd,
+            trigger_id,
+            contact_key,
+            unique_cfg,
+            now,
+        ):
+            logger.info(
+                "Trigger %r já executado (unique) para %s",
+                trigger.get("name"),
+                phone,
+            )
+            stats["skipped"] += 1
+            if chat_key:
+                keep_unseen.add(chat_key)
+            continue
+
+        enqueue_kwargs: dict = {}
+        if unique_cfg.get("enabled"):
+            enqueue_kwargs["trigger_id"] = trigger_id
+            enqueue_kwargs["contact_key"] = contact_key
+            enqueue_kwargs["scope_key"] = triggers_store.unique_scope_key(
+                str(unique_cfg.get("scope") or "day"), now
+            )
+
+        try:
+            job_id = async_send_queue.enqueue_job(
+                mgd,
+                phone,
+                trigger["reply_message"],
+                unic_sent=False,
+                unRead=True,
+                **enqueue_kwargs,
+            )
+            logger.info(
+                "Trigger %r disparado para %s (job %s) msg=%r",
+                trigger.get("name"),
+                phone,
+                job_id,
+                message_text[:80],
+            )
+            stats["queued"] += 1
+            fired_for_chat = True
+            _mark_processed(dedup_key)
+        except Exception:
+            stats["errors"] += 1
+            triggers_store.release_execution_claim(
+                mgd, trigger_id, contact_key, unique_cfg, now
+            )
+            logger.exception(
+                "Triggers: falha ao enfileirar resposta do trigger %s", trigger_id
+            )
+    return fired_for_chat
+
+
+def _validate_and_send_inline(
+    messages_runner,
+    nav,
+    mgd,
+    phone: str,
+    message_text: str,
+    contact_key: str,
+    candidates: list[dict],
+    now,
+    stats: dict,
+    dedup_key: str,
+    chat_key: str,
+    keep_unseen: set[str],
+) -> bool:
+    """
+    Abre o chat uma vez, valida (recebida + sem humano) e envia as respostas
+    no mesmo chat aberto. Registra na fila como job inline (sem RabbitMQ).
+    """
+    chat_opened = False
+    sent_any = False
+    try:
+        result = messages_runner.getMessages(nav, phone, limit=50, leave_open=True)
+        chat_opened = True
+    except Exception:
+        logger.exception(
+            "Triggers: falha ao abrir histórico para validar/enviar (%s); sem envio",
+            phone,
+        )
+        stats["errors"] += 1
+        return False
+
+    if not result or not result.get("success"):
+        logger.warning(
+            "Triggers: não validou/enviou em %s (%s)",
+            phone,
+            (result or {}).get("error") if isinstance(result, dict) else "sem resultado",
+        )
+        stats["skipped"] += 1
+        if chat_opened:
+            messages_runner._leave_conversation(nav, restore_unread=True)
+        return False
+
+    messages = result.get("messages") or []
+    if messages and not _preview_is_incoming(messages, message_text):
+        logger.info(
+            "Triggers: chat %s msg=%r ignorado (última mensagem não recebida)",
+            phone,
+            message_text[:80],
+        )
+        stats["skipped"] += 1
+        messages_runner._leave_conversation(nav, restore_unread=True)
+        return False
+
+    if messages and _chat_has_human_outbound(mgd, phone, messages):
+        logger.info(
+            "Triggers: chat %s msg=%r ignorado (conversa com atendimento humano)",
+            phone,
+            message_text[:80],
+        )
+        stats["skipped"] += 1
+        messages_runner._leave_conversation(nav, restore_unread=True)
+        return False
+
+    bot = AutoBoot.WhatsAppBot(nav, mgd)
+    remaining = list(candidates)
+    while remaining:
+        trigger = remaining.pop(0)
+        stats["matched"] += 1
+        trigger_id = trigger["id"]
+        unique_cfg = trigger.get("unique") or {}
+
+        if not triggers_store.try_claim_execution(
+            mgd,
+            trigger_id,
+            contact_key,
+            unique_cfg,
+            now,
+        ):
+            logger.info(
+                "Trigger %r já executado (unique) para %s",
+                trigger.get("name"),
+                phone,
+            )
+            stats["skipped"] += 1
+            if chat_key:
+                keep_unseen.add(chat_key)
+            continue
+
+        enqueue_kwargs: dict = {}
+        if unique_cfg.get("enabled"):
+            enqueue_kwargs["trigger_id"] = trigger_id
+            enqueue_kwargs["contact_key"] = contact_key
+            enqueue_kwargs["scope_key"] = triggers_store.unique_scope_key(
+                str(unique_cfg.get("scope") or "day"), now
+            )
+
+        job_id = None
+        try:
+            job_id = async_send_queue.create_inline_job(
+                mgd,
+                phone,
+                trigger["reply_message"],
+                unRead=True,
+                **enqueue_kwargs,
+            )
+            # Último envio desta abertura: volta à home; se houver mais, mantém aberto.
+            is_last = len(remaining) == 0
+            send_result = bot.syncSendText(
+                phone,
+                trigger["reply_message"],
+                unic_sent=False,
+                unRead=True,
+                skip_open=True,
+                return_home=is_last,
+            )
+            ok = send_result == "Enviado"
+            async_send_queue.finalize_job(mgd, job_id, ok, send_result)
+            if ok:
+                logger.info(
+                    "Trigger %r enviado inline para %s (job %s) msg=%r",
+                    trigger.get("name"),
+                    phone,
+                    job_id,
+                    message_text[:80],
+                )
+                stats["queued"] += 1
+                sent_any = True
+                _mark_processed(dedup_key)
+                chat_opened = not is_last
+            else:
+                triggers_store.release_execution_claim(
+                    mgd, trigger_id, contact_key, unique_cfg, now
+                )
+                stats["errors"] += 1
+                logger.warning(
+                    "Trigger %r falhou no envio inline (%s): %s",
+                    trigger.get("name"),
+                    phone,
+                    send_result,
+                )
+                break
+        except Exception:
+            stats["errors"] += 1
+            triggers_store.release_execution_claim(
+                mgd, trigger_id, contact_key, unique_cfg, now
+            )
+            if job_id:
+                async_send_queue.finalize_job(mgd, job_id, False, "erro no envio inline")
+            logger.exception(
+                "Triggers: falha no envio inline do trigger %s", trigger_id
+            )
+            break
+
+    if chat_opened:
+        # Validou mas não enviou nada (todos unique), ou quebrou no meio.
+        messages_runner._leave_conversation(nav, restore_unread=not sent_any)
+    return sent_any
 
 
 def diff_changed_chats(new_chats: list[dict]) -> list[dict]:
@@ -365,46 +559,6 @@ def _unread_int(chat: dict) -> int:
 
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip()).lower()
-
-
-def _chat_allows_trigger_reply(
-    messages_runner, nav, mgd, phone: str, preview_text: str
-) -> tuple[bool, str]:
-    """
-    Abre o histórico uma vez e valida:
-    1) a mensagem do unread (preview) é recebida;
-    2) nenhuma mensagem 'enviada' no chat veio de fora do sistema (humano).
-
-    Retorna (True, "") se pode enfileirar; (False, motivo) caso contrário.
-    Se não conseguir abrir o histórico, fail-open (True) — mesmo padrão anterior.
-    """
-    try:
-        # Mais histórico: detectar humano no meio da conversa, não só as últimas 20.
-        result = messages_runner.getMessages(nav, phone, limit=50)
-    except Exception:
-        logger.exception(
-            "Triggers: falha ao abrir histórico para validar chat (%s); seguindo sem bloqueio",
-            phone,
-        )
-        return True, ""
-    if not result or not result.get("success"):
-        logger.warning(
-            "Triggers: não foi possível validar chat em %s (%s); seguindo sem bloqueio",
-            phone,
-            (result or {}).get("error") if isinstance(result, dict) else "sem resultado",
-        )
-        return True, ""
-    messages = result.get("messages") or []
-    if not messages:
-        return True, ""
-
-    if not _preview_is_incoming(messages, preview_text):
-        return False, "última mensagem não recebida"
-
-    if _chat_has_human_outbound(mgd, phone, messages):
-        return False, "conversa com atendimento humano (mensagem enviada fora do sistema)"
-
-    return True, ""
 
 
 def _preview_is_incoming(messages: list, preview_text: str) -> bool:

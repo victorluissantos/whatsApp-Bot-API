@@ -19,8 +19,21 @@ class WhatsAppBot:
 		self.mongo = mongo
 
 
-	def syncSendText(self, telefone, message, unic_sent=False, unRead=False):
-		print("[SYNC_SENDTEXT_V2] Iniciando fluxo por URL")
+	def syncSendText(
+		self,
+		telefone,
+		message,
+		unic_sent=False,
+		unRead=False,
+		skip_open=False,
+		return_home=True,
+	):
+		"""
+		Envia texto no WhatsApp Web.
+		skip_open=True: chat já está aberto (ex.: após getMessages leave_open).
+		return_home=False: mantém o chat aberto para outro envio na sequência.
+		"""
+		print("[SYNC_SENDTEXT_V2] Iniciando fluxo por URL" if not skip_open else "[SYNC_SENDTEXT_V2] Envio no chat já aberto")
 
 		telefone = ''.join(filter(str.isdigit, str(telefone)))
 		if not telefone.startswith("55"):
@@ -57,40 +70,41 @@ class WhatsAppBot:
 			start = time.time()
 			print(f"[TEMPO] Início do envio: {start}")
 
-			# Fluxo resiliente: abre direto o chat por URL para evitar quebra de seletor
-			link = f"https://web.whatsapp.com/send?phone={telefone.replace('+', '')}"
-			self.navegador.get(link)
-			print(f"[DEPURACAO] URL aberta: {link}")
+			if not skip_open:
+				# Fluxo resiliente: abre direto o chat por URL para evitar quebra de seletor
+				link = f"https://web.whatsapp.com/send?phone={telefone.replace('+', '')}"
+				self.navegador.get(link)
+				print(f"[DEPURACAO] URL aberta: {link}")
 
-			WebDriverWait(self.navegador, 20).until(
-				EC.presence_of_element_located((By.ID, "app"))
-			)
+				WebDriverWait(self.navegador, 20).until(
+					EC.presence_of_element_located((By.ID, "app"))
+				)
 
-			# Detecta número inválido (pt/en) de forma explícita
-			invalid_xpaths = [
-				'//*[contains(text(), "número de telefone compartilhado pela URL é inválido")]',
-				'//*[contains(text(), "Phone number shared via url is invalid")]',
-				'//*[contains(text(), "phone number shared via url is invalid")]',
-				'//*[contains(text(), "não está no WhatsApp")]',
-				'//*[contains(text(), "isn\'t on WhatsApp")]'
-			]
-			for invalid_xpath in invalid_xpaths:
-				try:
-					WebDriverWait(self.navegador, 2).until(
-						EC.presence_of_element_located((By.XPATH, invalid_xpath))
-					)
-					print("[DEPURACAO] Número marcado como inválido pelo WhatsApp Web")
+				# Detecta número inválido (pt/en) de forma explícita
+				invalid_xpaths = [
+					'//*[contains(text(), "número de telefone compartilhado pela URL é inválido")]',
+					'//*[contains(text(), "Phone number shared via url is invalid")]',
+					'//*[contains(text(), "phone number shared via url is invalid")]',
+					'//*[contains(text(), "não está no WhatsApp")]',
+					'//*[contains(text(), "isn\'t on WhatsApp")]'
+				]
+				for invalid_xpath in invalid_xpaths:
 					try:
-						self.navegador.save_screenshot("static/tmp/send_invalid.png")
-					except Exception:
-						pass
-					status = "Inválido!"
-					break
-				except TimeoutException:
-					continue
+						WebDriverWait(self.navegador, 2).until(
+							EC.presence_of_element_located((By.XPATH, invalid_xpath))
+						)
+						print("[DEPURACAO] Número marcado como inválido pelo WhatsApp Web")
+						try:
+							self.navegador.save_screenshot("static/tmp/send_invalid.png")
+						except Exception:
+							pass
+						status = "Inválido!"
+						break
+					except TimeoutException:
+						continue
 
-			if status != "Enviado":
-				return status
+				if status != "Enviado":
+					return status
 
 			# Aguarda campo de mensagem com seletores atuais + fallback
 			inputField = None
@@ -157,14 +171,6 @@ class WhatsAppBot:
 					print("[DEPURACAO] Chat marcado como não lido (Ctrl+Alt+Shift+U)")
 				except Exception as unread_err:
 					print(f"[DEPURACAO] Falha ao marcar como não lido: {unread_err}")
-			# Captura screenshot após o envio
-			# try:
-				# screenshot_path = 'static/tmp/after_send.png'
-				# self.navegador.save_screenshot(screenshot_path)
-				# print(f"[DEPURACAO] Screenshot salvo em {screenshot_path}")
-			# except Exception as e:
-				# print(f"[ERRO] Falha ao capturar screenshot: {e}")
-			# print(f"[TEMPO] Tempo total do método: {time.time() - start:.2f}s")
 
 		except Exception as e:
 			print(f"❌ Erro ao enviar mensagem: {e}")
@@ -180,18 +186,19 @@ class WhatsAppBot:
 			err_preview = str(e).replace("\n", " ")[:180]
 			status = f"Erro ao enviar: {err_preview}"
 
-		# Volta para a home / lista lateral (poller de triggers depende do #pane-side)
-		try:
-			webdriver.ActionChains(self.navegador).send_keys(Keys.ESCAPE).perform()
-		except Exception:
-			pass
-		try:
-			self.navegador.get("https://web.whatsapp.com/")
-			WebDriverWait(self.navegador, 15).until(
-				EC.presence_of_element_located((By.ID, "app"))
-			)
-		except Exception as home_err:
-			print(f"[DEPURACAO] Falha ao voltar para home após envio: {home_err}")
+		if return_home:
+			# Volta para a home / lista lateral (poller de triggers depende do #pane-side)
+			try:
+				webdriver.ActionChains(self.navegador).send_keys(Keys.ESCAPE).perform()
+			except Exception:
+				pass
+			try:
+				self.navegador.get("https://web.whatsapp.com/")
+				WebDriverWait(self.navegador, 15).until(
+					EC.presence_of_element_located((By.ID, "app"))
+				)
+			except Exception as home_err:
+				print(f"[DEPURACAO] Falha ao voltar para home após envio: {home_err}")
 
 		# Persistência no MongoDB
 		self.mongo.collection.insert_one({

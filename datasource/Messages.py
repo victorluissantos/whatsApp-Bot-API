@@ -113,10 +113,12 @@ class Run:
         }));
     """
 
-    def getMessages(self, navegador, phone, limit: int = 20):
+    def getMessages(self, navegador, phone, limit: int = 20, leave_open: bool = False):
         """
         Abre a conversa de um contato pelo número (via URL do WhatsApp Web)
         e extrai as mensagens da conversa.
+
+        leave_open=True: mantém o chat aberto (trigger valida e envia na mesma abertura).
         """
         opened_conversation = False
         try:
@@ -259,8 +261,9 @@ class Run:
             }
         finally:
             # Abrir o chat marca como lido e deixa a UI travada na conversa —
-            # sempre tenta restaurar unread e voltar à lista (#pane-side).
-            if opened_conversation:
+            # sempre tenta restaurar unread e voltar à lista (#pane-side),
+            # exceto leave_open (envio unificado do trigger).
+            if opened_conversation and not leave_open:
                 self._leave_conversation(navegador, restore_unread=True)
 
     def _leave_conversation(self, navegador, restore_unread: bool = False) -> None:

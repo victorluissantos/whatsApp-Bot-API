@@ -129,6 +129,40 @@ def enqueue_job(
     return job_id
 
 
+def create_inline_job(
+    mgd,
+    phone: str,
+    message: str,
+    unRead: bool = True,
+    trigger_id: Optional[str] = None,
+    contact_key: Optional[str] = None,
+    scope_key: Optional[str] = None,
+) -> str:
+    """
+    Registra job na fila já em processing (sem RabbitMQ).
+    Usado pelo trigger unificado: valida + envia na mesma abertura do chat.
+    """
+    job_id = str(uuid.uuid4())
+    doc: dict[str, Any] = {
+        "job_id": job_id,
+        "phone": phone,
+        "message": message,
+        "unic_sent": False,
+        "unRead": bool(unRead),
+        "status": "processing",
+        "created_at": datetime.utcnow(),
+        "started_at": datetime.utcnow(),
+    }
+    if trigger_id:
+        doc["trigger_id"] = str(trigger_id)
+    if contact_key:
+        doc["contact_key"] = str(contact_key)
+    if scope_key:
+        doc["scope_key"] = str(scope_key)
+    _queue(mgd).insert_one(doc)
+    return job_id
+
+
 def get_next_rabbit_job() -> tuple[Optional[dict], Optional[int]]:
     channel, _queue_name = _ensure_rabbit_channel()
     method, _properties, body = channel.basic_get(queue=_queue_name, auto_ack=False)
