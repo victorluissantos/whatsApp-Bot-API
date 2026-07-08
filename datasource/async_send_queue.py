@@ -13,6 +13,8 @@ import pika
 import pymongo
 import requests
 
+from datasource.phone_utils import phone_digit_variants
+
 QUEUE_COLLECTION = "wa_message_queue"
 WEBHOOK_CONFIG_COLLECTION = "wa_delivery_webhook"
 WEBHOOK_DOC_ID = "config"
@@ -280,6 +282,64 @@ def _release_trigger_claim_from_job(mgd, doc: dict) -> None:
         logger.warning("Falha ao liberar unique do trigger após delete: %s", e)
 
 
+def resend_job(mgd, job_id: str) -> tuple[bool, str]:
+    """Recoloca job na fila: status pending e republica no RabbitMQ."""
+    existing = _queue(mgd).find_one({"job_id": job_id})
+    if not existing:
+        return False, "Job não encontrado"
+    current = str(existing.get("status", ""))
+    if current == "pending":
+        return False, "Job já está pendente"
+    if current == "deleted":
+        return False, "Job excluído; não é possível reenviar"
+
+    phone = str(existing.get("phone") or "").strip()
+    message = str(existing.get("message") or "")
+    if not phone or not message:
+        return False, "Job sem telefone ou mensagem"
+
+    updated = _queue(mgd).update_one(
+        {"job_id": job_id, "status": {"$ne": "pending"}},
+        {
+            "$set": {"status": "pending"},
+            "$unset": {
+                "result": "",
+                "started_at": "",
+                "processed_at": "",
+                "deleted_at": "",
+            },
+        },
+    )
+    if updated.modified_count == 0:
+        return False, "Não foi possível reenviar o job"
+
+    try:
+        _publish_to_rabbit(
+            {
+                "job_id": job_id,
+                "phone": phone,
+                "message": message,
+                "unic_sent": bool(existing.get("unic_sent", False)),
+                "unRead": bool(existing.get("unRead", False)),
+                "created_at": datetime.utcnow().isoformat() + "Z",
+            }
+        )
+    except Exception as e:
+        _queue(mgd).update_one(
+            {"job_id": job_id},
+            {
+                "$set": {
+                    "status": "failed",
+                    "result": f"Falha ao republicar no RabbitMQ: {e}",
+                    "processed_at": datetime.utcnow(),
+                }
+            },
+        )
+        return False, f"Falha ao republicar no RabbitMQ: {e}"
+
+    return True, "Job reenviado para a fila"
+
+
 def delete_job(mgd, job_id: str) -> tuple[bool, str]:
     """Soft-delete: status deleted. Registro permanece no histórico; dedup/worker/triggers ignoram."""
     existing = _queue(mgd).find_one({"job_id": job_id})
@@ -311,15 +371,24 @@ def delete_job(mgd, job_id: str) -> tuple[bool, str]:
     return True, "Job excluído com sucesso"
 
 
+def _queue_phone_filter(phone: str) -> dict:
+    """Filtro Mongo para phone casando qualquer variante BR (DDI / 9º dígito)."""
+    variants = phone_digit_variants(phone)
+    if not variants:
+        return {"phone": {"$regex": "^$"}}
+    return {
+        "$or": [{"phone": {"$regex": re.escape(v)}} for v in sorted(variants)]
+    }
+
+
 def has_active_queue_message(mgd, phone: str, message: str) -> bool:
     """True se existe job sent (não deleted) com mesmo phone+message."""
-    digits = "".join(filter(str.isdigit, str(phone or "")))
-    if not digits:
+    if not phone_digit_variants(phone):
         return False
     return (
         _queue(mgd).find_one(
             {
-                "phone": {"$regex": re.escape(digits)},
+                **_queue_phone_filter(phone),
                 "message": message,
                 "status": {"$in": list(ACTIVE_QUEUE_STATUSES)},
             },
@@ -346,14 +415,13 @@ def is_system_outbound_message(mgd, phone: str, message: str) -> bool:
     True se a mensagem enviada consta como saída do sistema (fila ou histórico legado).
     Usado para detectar atendimento humano na conversa.
     """
-    digits = "".join(filter(str.isdigit, str(phone or "")))
-    if not digits or not (message or "").strip():
+    if not phone_digit_variants(phone) or not (message or "").strip():
         return False
     target = _normalize_message_for_match(message)
 
     for doc in _queue(mgd).find(
         {
-            "phone": {"$regex": re.escape(digits)},
+            **_queue_phone_filter(phone),
             "status": {"$in": list(SYSTEM_OUTBOUND_QUEUE_STATUSES)},
         },
         {"message": 1},
@@ -362,10 +430,10 @@ def is_system_outbound_message(mgd, phone: str, message: str) -> bool:
             return True
 
     try:
-        legacy_phone = _normalize_legacy_phone(phone)
+        legacy_phones = sorted({"+" + v for v in phone_digit_variants(phone) if v})
         for doc in mgd.collection.find(
             {
-                "telefone": legacy_phone,
+                "telefone": {"$in": legacy_phones},
                 "status": {"$in": ["Enviado", "deleted"]},
             },
             {"mensagem": 1},

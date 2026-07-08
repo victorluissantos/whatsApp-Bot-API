@@ -11,6 +11,7 @@ from datasource import Messages
 from datasource import AutoBoot
 from datasource import triggers as triggers_store
 from datasource.app_timezone import now_local
+from datasource.phone_utils import phone_digit_variants
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +56,7 @@ def forget_chat(phone: Optional[str] = None, name: Optional[str] = None) -> None
     Remove chat do baseline/dedup para que a próxima última mensagem volte a ser avaliada.
     Usado após soft-delete na fila (reenvio / re-disparo de trigger).
     """
-    digits = re.sub(r"\D", "", str(phone or ""))
-    variants: set[str] = set()
-    if digits:
-        variants.add(digits)
-        if not digits.startswith("55") and len(digits) >= 10:
-            variants.add("55" + digits)
-        if digits.startswith("55") and len(digits) > 12:
-            variants.add(digits[2:])
+    variants = phone_digit_variants(str(phone or ""))
     for d in variants:
         _TRIGGER_SEEN.pop(f"phone:{d}", None)
     name_s = (name or "").strip()

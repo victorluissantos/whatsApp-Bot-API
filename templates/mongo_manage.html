@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}Gerenciar MongoDB — WhatsApp Bot API{% endblock %}
+
+{% block content %}
+<div class="container container-wide">
+    <div class="page-header">
+        <div>
+            <h1>Gestão MongoDB</h1>
+            <p>Exportar backup, limpar base e importar collection no banco No-SQL.</p>
+        </div>
+    </div>
+
+    {% if message %}
+    <div class="alert alert-success">{{ message }}</div>
+    {% endif %}
+
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <div class="mongo-grid">
+        <section class="mongo-card">
+            <h2>Exportar DB No-SQL</h2>
+            <p>Tira backup completo de todas as collections do banco em um único arquivo JSON.</p>
+            <a class="btn" href="/mongo/export">Exportar backup</a>
+        </section>
+
+        <section class="mongo-card">
+            <h2>Limpar DB No-SQL</h2>
+            <p>Zera dados para começar do zero. Atenção: pode impactar regras de negócio e históricos.</p>
+            <form method="post" action="/mongo/clear" onsubmit="return confirmClearMongo(this);">
+                <div class="form-group">
+                    <label for="clear_collection_name">Collection (opcional)</label>
+                    <input
+                        type="text"
+                        id="clear_collection_name"
+                        name="collection_name"
+                        placeholder="Vazio = limpar todas"
+                    >
+                </div>
+                <button type="submit" class="btn-danger">Limpar banco</button>
+            </form>
+        </section>
+
+        <section class="mongo-card">
+            <h2>Importar DB No-SQL</h2>
+            <p>Selecione um arquivo JSON compatível para importar dados em uma collection.</p>
+            <form method="post" action="/mongo/import" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="mongo_file">Arquivo JSON</label>
+                    <input type="file" id="mongo_file" name="file" accept=".json,application/json" required>
+                </div>
+                <div class="form-group">
+                    <label for="import_collection_name">Collection de destino</label>
+                    <input
+                        type="text"
+                        id="import_collection_name"
+                        name="collection_name"
+                        placeholder="Obrigatório para arquivo sem collection definida"
+                    >
+                </div>
+                <div class="form-group">
+                    <label for="mode">Modo de importação</label>
+                    <select id="mode" name="mode">
+                        <option value="replace">Substituir (zera e importa)</option>
+                        <option value="append">Adicionar (mantém existentes)</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn">Importar collection</button>
+            </form>
+        </section>
+    </div>
+
+    <section class="mongo-card">
+        <h2>Collections atuais</h2>
+        {% if collections %}
+        <div class="trigger-table-wrap">
+            <table class="trigger-table">
+                <thead>
+                    <tr>
+                        <th>Collection</th>
+                        <th>Documentos</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for coll in collections %}
+                    <tr>
+                        <td><code>{{ coll.name }}</code></td>
+                        <td>{{ coll.count }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="muted">Nenhuma collection encontrada.</p>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+function confirmClearMongo(form) {
+    const name = (form.collection_name.value || "").trim();
+    if (!name) {
+        return confirm("Tem certeza que deseja limpar TODAS as collections do MongoDB?");
+    }
+    return confirm("Tem certeza que deseja limpar a collection '" + name + "'?");
+}
+</script>
+{% endblock %}

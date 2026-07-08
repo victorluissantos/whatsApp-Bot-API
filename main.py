@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException, Query, Form, File, UploadFile, BackgroundTasks
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +19,7 @@ import base64
 from urllib.parse import urlencode
 from io import BytesIO
 from PIL import Image
+from bson import json_util
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
@@ -634,6 +635,167 @@ async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request, "active_nav": "home"})
 
 
+@app.get("/mongo", response_class=HTMLResponse, include_in_schema=False)
+async def mongo_manage_page(
+    request: Request,
+    msg: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+):
+    collections_info: list[dict] = []
+    try:
+        names = sorted(mgd.db.list_collection_names())
+        for name in names:
+            try:
+                count = mgd.db[name].count_documents({})
+            except Exception:
+                count = 0
+            collections_info.append({"name": name, "count": count})
+    except Exception as e:
+        error = error or f"Erro ao listar collections: {e}"
+    return templates.TemplateResponse(
+        "mongo_manage.html",
+        {
+            "request": request,
+            "active_nav": "mongo",
+            "collections": collections_info,
+            "message": msg,
+            "error": error,
+        },
+    )
+
+
+@app.get("/mongo/export", include_in_schema=False)
+async def mongo_export_db():
+    try:
+        payload = {
+            "schema_version": 1,
+            "db_name": mgd.db.name,
+            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "collections": {},
+        }
+        for name in sorted(mgd.db.list_collection_names()):
+            docs = list(mgd.db[name].find({}))
+            payload["collections"][name] = docs
+        filename = f"mongo-backup-{payload['db_name']}-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        return Response(
+            content=json_util.dumps(payload, ensure_ascii=False, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        params = urlencode({"error": f"Erro ao exportar DB: {e}"})
+        return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+
+
+@app.post("/mongo/clear", include_in_schema=False)
+async def mongo_clear_db(collection_name: str = Form("")):
+    target = (collection_name or "").strip()
+    try:
+        if target:
+            if target not in mgd.db.list_collection_names():
+                params = urlencode({"error": f"Collection '{target}' não encontrada"})
+                return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+            deleted = mgd.db[target].delete_many({}).deleted_count
+            params = urlencode({"msg": f"Collection '{target}' zerada com sucesso ({deleted} documento(s) removido(s))"})
+            return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+
+        total_deleted = 0
+        collection_count = 0
+        for name in mgd.db.list_collection_names():
+            deleted = mgd.db[name].delete_many({}).deleted_count
+            total_deleted += deleted
+            collection_count += 1
+        params = urlencode(
+            {
+                "msg": (
+                    f"Banco limpo com sucesso: {collection_count} collection(s) zerada(s), "
+                    f"{total_deleted} documento(s) removido(s)"
+                )
+            }
+        )
+        return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+    except Exception as e:
+        params = urlencode({"error": f"Erro ao limpar DB: {e}"})
+        return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+
+
+@app.post("/mongo/import", include_in_schema=False)
+async def mongo_import_db(
+    file: UploadFile = File(...),
+    collection_name: str = Form(""),
+    mode: str = Form("replace"),
+):
+    target = (collection_name or "").strip()
+    mode_clean = (mode or "replace").strip().lower()
+    if mode_clean not in ("replace", "append"):
+        params = urlencode({"error": "Modo inválido. Use replace ou append"})
+        return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+
+    try:
+        raw = await file.read()
+        payload = json_util.loads(raw.decode("utf-8"))
+
+        source_collection = ""
+        docs: list[dict] = []
+        if isinstance(payload, list):
+            docs = payload
+        elif isinstance(payload, dict) and isinstance(payload.get("collections"), dict):
+            collections_map = payload["collections"]
+            available = sorted(collections_map.keys())
+            if target:
+                if target not in collections_map:
+                    params = urlencode({"error": f"Collection '{target}' não existe no arquivo importado"})
+                    return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+                source_collection = target
+            elif len(available) == 1:
+                source_collection = available[0]
+            else:
+                params = urlencode(
+                    {"error": "Arquivo possui múltiplas collections. Informe o nome da collection para importar"}
+                )
+                return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+            docs = collections_map.get(source_collection) or []
+        elif isinstance(payload, dict) and isinstance(payload.get("docs"), list):
+            docs = payload["docs"]
+            source_collection = str(payload.get("collection") or "").strip()
+        else:
+            params = urlencode({"error": "Formato de arquivo incompatível para importação"})
+            return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+
+        if not isinstance(docs, list):
+            params = urlencode({"error": "Formato inválido: lista de documentos ausente"})
+            return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+
+        destination = target or source_collection
+        if not destination:
+            params = urlencode({"error": "Informe a collection de destino para importar"})
+            return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+        coll = mgd.db[destination]
+
+        if mode_clean == "replace":
+            coll.delete_many({})
+        inserted = 0
+        if docs:
+            result = coll.insert_many(docs, ordered=False)
+            inserted = len(result.inserted_ids)
+
+        params = urlencode(
+            {
+                "msg": (
+                    f"Importação concluída na collection '{destination}': "
+                    f"{inserted} documento(s) importado(s) (modo {mode_clean})"
+                )
+            }
+        )
+        return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+    except json.JSONDecodeError:
+        params = urlencode({"error": "Arquivo JSON inválido"})
+        return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+    except Exception as e:
+        params = urlencode({"error": f"Erro ao importar DB: {e}"})
+        return RedirectResponse(url=f"/mongo?{params}", status_code=303)
+
+
 # --- Triggers: telas HTML (rotas estáticas antes de /triggers/{id}) ---
 
 @app.get("/triggers", response_class=HTMLResponse, include_in_schema=False)
@@ -1231,6 +1393,24 @@ async def send_queue_cancel_form(
     return RedirectResponse(url=f"/send-queue?{urlencode(params)}", status_code=303)
 
 
+@app.post("/send-queue/{job_id}/resend", include_in_schema=False)
+async def send_queue_resend_form(
+    job_id: str,
+    page: int = Form(1),
+    page_size: int = Form(20),
+    phone: str = Form(""),
+    message: str = Form(""),
+    status: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+):
+    ok, detail = async_queue.resend_job(mgd, job_id)
+    params = _send_queue_redirect_params(
+        page, page_size, phone, message, status, date_from, date_to, ok, detail
+    )
+    return RedirectResponse(url=f"/send-queue?{urlencode(params)}", status_code=303)
+
+
 @app.post("/send-queue/{job_id}/delete", include_in_schema=False)
 async def send_queue_delete_form(
     job_id: str,
@@ -1243,6 +1423,70 @@ async def send_queue_delete_form(
     date_to: str = Form(""),
 ):
     ok, detail = async_queue.delete_job(mgd, job_id)
+    params = _send_queue_redirect_params(
+        page, page_size, phone, message, status, date_from, date_to, ok, detail
+    )
+    return RedirectResponse(url=f"/send-queue?{urlencode(params)}", status_code=303)
+
+
+@app.post("/send-queue/delete-batch", include_in_schema=False)
+async def send_queue_delete_batch_form(
+    job_ids: list[str] = Form([]),
+    page: int = Form(1),
+    page_size: int = Form(20),
+    phone: str = Form(""),
+    message: str = Form(""),
+    status: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+):
+    cleaned_ids: list[str] = []
+    seen: set[str] = set()
+    for raw_id in job_ids:
+        job_id = str(raw_id or "").strip()
+        if not job_id or job_id in seen:
+            continue
+        seen.add(job_id)
+        cleaned_ids.append(job_id)
+
+    if not cleaned_ids:
+        params = _send_queue_redirect_params(
+            page,
+            page_size,
+            phone,
+            message,
+            status,
+            date_from,
+            date_to,
+            False,
+            "Nenhum job selecionado para exclusão",
+        )
+        return RedirectResponse(url=f"/send-queue?{urlencode(params)}", status_code=303)
+
+    deleted_count = 0
+    errors: list[str] = []
+    for job_id in cleaned_ids:
+        ok, detail = async_queue.delete_job(mgd, job_id)
+        if ok:
+            deleted_count += 1
+            continue
+        errors.append(f"{job_id}: {detail}")
+
+    if errors and deleted_count == 0:
+        detail = "Falha ao excluir os jobs selecionados: " + "; ".join(errors[:3])
+        if len(errors) > 3:
+            detail += f" (+{len(errors) - 3} erro(s))"
+        ok = False
+    elif errors:
+        detail = (
+            f"{deleted_count} job(s) excluído(s) com sucesso; "
+            f"{len(errors)} falharam."
+        )
+        ok = True
+    else:
+        detail = f"{deleted_count} job(s) excluído(s) com sucesso"
+        ok = True
+
     params = _send_queue_redirect_params(
         page, page_size, phone, message, status, date_from, date_to, ok, detail
     )

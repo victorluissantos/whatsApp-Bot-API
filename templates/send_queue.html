@@ -68,10 +68,25 @@
     </form>
 
     {% if items %}
+    <form id="bulk-delete-form" method="post" action="/send-queue/delete-batch" onsubmit="return confirmBulkDelete();">
+        <input type="hidden" name="page" value="{{ page }}">
+        <input type="hidden" name="page_size" value="{{ page_size }}">
+        <input type="hidden" name="phone" value="{{ filters.phone }}">
+        <input type="hidden" name="message" value="{{ filters.message }}">
+        <input type="hidden" name="status" value="{{ filters.status }}">
+        <input type="hidden" name="date_from" value="{{ filters.date_from }}">
+        <input type="hidden" name="date_to" value="{{ filters.date_to }}">
+    </form>
+    <div class="filter-actions">
+        <button type="submit" form="bulk-delete-form" class="btn-danger">Excluir selecionados</button>
+    </div>
     <div class="trigger-table-wrap">
         <table class="trigger-table queue-table">
             <thead>
                 <tr>
+                    <th class="nowrap">
+                        <input type="checkbox" id="select-all-jobs" aria-label="Selecionar todos os jobs visíveis">
+                    </th>
                     <th>Criado em</th>
                     <th>Telefone</th>
                     <th>Mensagem</th>
@@ -83,6 +98,20 @@
             <tbody>
                 {% for item in items %}
                 <tr>
+                    <td class="nowrap">
+                        {% if item.status != 'deleted' %}
+                        <input
+                            type="checkbox"
+                            class="js-job-checkbox"
+                            name="job_ids"
+                            value="{{ item.job_id }}"
+                            form="bulk-delete-form"
+                            aria-label="Selecionar job {{ item.job_id }}"
+                        >
+                        {% else %}
+                        <small class="muted">—</small>
+                        {% endif %}
+                    </td>
                     <td class="nowrap">
                         <small>{{ item.created_at or '—' }}</small>
                         {% if item.started_at %}
@@ -107,16 +136,34 @@
                     <td class="result-cell">{{ item.result or '—' }}</td>
                     <td>
                         {% if item.status != 'deleted' %}
-                        <form class="inline-form" method="post" action="/send-queue/{{ item.job_id }}/delete" onsubmit="return confirm('Excluir esta mensagem da fila? Ela deixará de contar como enviada (unic/triggers).');">
-                            <input type="hidden" name="page" value="{{ page }}">
-                            <input type="hidden" name="page_size" value="{{ page_size }}">
-                            <input type="hidden" name="phone" value="{{ filters.phone }}">
-                            <input type="hidden" name="message" value="{{ filters.message }}">
-                            <input type="hidden" name="status" value="{{ filters.status }}">
-                            <input type="hidden" name="date_from" value="{{ filters.date_from }}">
-                            <input type="hidden" name="date_to" value="{{ filters.date_to }}">
-                            <button type="submit" class="btn-danger btn-sm">Excluir</button>
-                        </form>
+                        <div class="actions">
+                            {% if item.status != 'pending' %}
+                            <form class="inline-form" method="post" action="/send-queue/{{ item.job_id }}/resend" onsubmit="return confirm('Reenviar esta mensagem? O status voltará para pending.');">
+                                <input type="hidden" name="page" value="{{ page }}">
+                                <input type="hidden" name="page_size" value="{{ page_size }}">
+                                <input type="hidden" name="phone" value="{{ filters.phone }}">
+                                <input type="hidden" name="message" value="{{ filters.message }}">
+                                <input type="hidden" name="status" value="{{ filters.status }}">
+                                <input type="hidden" name="date_from" value="{{ filters.date_from }}">
+                                <input type="hidden" name="date_to" value="{{ filters.date_to }}">
+                                <button type="submit" class="queue-action-btn queue-action-resend" title="Reenviar" aria-label="Reenviar">
+                                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6V3L8 7l4 4V8c2.76 0 5 2.24 5 5 0 1.01-.3 1.95-.82 2.73l1.46 1.46A6.96 6.96 0 0 0 19 13c0-3.87-3.13-7-7-7zm-5 5c0-1.01.3-1.95.82-2.73L6.36 6.81A6.96 6.96 0 0 0 5 13c0 3.87 3.13 7 7 7v3l4-4-4-4v3c-2.76 0-5-2.24-5-5z"/></svg>
+                                </button>
+                            </form>
+                            {% endif %}
+                            <form class="inline-form" method="post" action="/send-queue/{{ item.job_id }}/delete" onsubmit="return confirm('Excluir esta mensagem da fila? Ela deixará de contar como enviada (unic/triggers).');">
+                                <input type="hidden" name="page" value="{{ page }}">
+                                <input type="hidden" name="page_size" value="{{ page_size }}">
+                                <input type="hidden" name="phone" value="{{ filters.phone }}">
+                                <input type="hidden" name="message" value="{{ filters.message }}">
+                                <input type="hidden" name="status" value="{{ filters.status }}">
+                                <input type="hidden" name="date_from" value="{{ filters.date_from }}">
+                                <input type="hidden" name="date_to" value="{{ filters.date_to }}">
+                                <button type="submit" class="queue-action-btn queue-action-delete" title="Excluir" aria-label="Excluir">
+                                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12v2H6V7zm2 3h8l-1 10H9L8 10zm3-6h2l1 1h4v2H6V5h4l1-1z"/></svg>
+                                </button>
+                            </form>
+                        </div>
                         {% else %}
                         <small class="muted">excluído</small>
                         {% endif %}
@@ -157,4 +204,53 @@
     </div>
     {% endif %}
 </div>
+
+<script>
+function queueCheckboxes() {
+    return Array.from(document.querySelectorAll(".js-job-checkbox"));
+}
+
+function selectedQueueCount() {
+    return queueCheckboxes().filter((checkbox) => checkbox.checked).length;
+}
+
+function syncSelectAllCheckbox() {
+    const selectAll = document.getElementById("select-all-jobs");
+    if (!selectAll) return;
+
+    const checkboxes = queueCheckboxes();
+    const selected = selectedQueueCount();
+    selectAll.checked = checkboxes.length > 0 && selected === checkboxes.length;
+    selectAll.indeterminate = selected > 0 && selected < checkboxes.length;
+}
+
+function confirmBulkDelete() {
+    const selected = selectedQueueCount();
+    if (selected === 0) {
+        alert("Selecione pelo menos um job para excluir.");
+        return false;
+    }
+    return confirm("Excluir os jobs selecionados da fila? Eles deixarão de contar como enviados (unic/triggers).");
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+    const selectAll = document.getElementById("select-all-jobs");
+    const checkboxes = queueCheckboxes();
+
+    if (selectAll) {
+        selectAll.addEventListener("change", function () {
+            checkboxes.forEach((checkbox) => {
+                checkbox.checked = selectAll.checked;
+            });
+            syncSelectAllCheckbox();
+        });
+    }
+
+    checkboxes.forEach((checkbox) => {
+        checkbox.addEventListener("change", syncSelectAllCheckbox);
+    });
+
+    syncSelectAllCheckbox();
+});
+</script>
 {% endblock %}

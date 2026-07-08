@@ -11,6 +11,7 @@ import pymongo
 
 from datasource import trigger_matcher
 from datasource.app_timezone import now_local
+from datasource.phone_utils import phone_digit_variants
 
 logger = logging.getLogger(__name__)
 
@@ -321,15 +322,7 @@ def release_execution_claim_by_keys(
 
 
 def _phone_contact_keys(phone: str) -> set[str]:
-    digits = re.sub(r"\D", "", str(phone or ""))
-    if not digits:
-        return set()
-    keys = {digits}
-    if digits.startswith("55") and len(digits) > 11:
-        keys.add(digits[2:])
-    elif not digits.startswith("55") and len(digits) >= 10:
-        keys.add("55" + digits)
-    return keys
+    return phone_digit_variants(phone)
 
 
 def release_execution_claims_for_phone(mgd, phone: str) -> int:
