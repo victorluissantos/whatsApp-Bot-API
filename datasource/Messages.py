@@ -125,7 +125,17 @@ class Run:
             
             campo_busca.clear()
             time.sleep(0.2)
-            telefone = '+55'+phone
+            # Evita +5555... quando o phone já vem com DDI 55 (ex.: trigger_engine).
+            telefone_digits = "".join(filter(str.isdigit, str(phone or "")))
+            if not telefone_digits:
+                return {
+                    "success": False,
+                    "error": "Telefone inválido",
+                    "phone": phone,
+                }
+            if not telefone_digits.startswith("55"):
+                telefone_digits = "55" + telefone_digits
+            telefone = "+" + telefone_digits
             campo_busca.send_keys(telefone)
             time.sleep(1)
             campo_busca.send_keys(Keys.RETURN)

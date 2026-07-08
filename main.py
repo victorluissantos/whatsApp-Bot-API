@@ -597,7 +597,7 @@ def _run_unread_pane_cache_watcher():
                         },
                     )
                 try:
-                    stats = trigger_engine.process_unread_changes(mgd, old_chats, raw)
+                    stats = trigger_engine.process_unread_changes(mgd, old_chats, raw, nav=nav)
                     if stats.get("queued"):
                         logging.info("Triggers: %s", stats)
                 except Exception:
@@ -845,6 +845,23 @@ async def triggers_delete_submit(trigger_id: str):
     if not triggers_store.delete_trigger(mgd, trigger_id):
         raise HTTPException(status_code=404, detail="Trigger não encontrado")
     return RedirectResponse(url="/triggers?msg=Trigger+exclu%C3%ADdo", status_code=303)
+
+
+@app.post("/triggers/deactivate", include_in_schema=False)
+async def triggers_deactivate_submit(
+    trigger_ids: Annotated[list[str], Form()] = [],
+):
+    result = triggers_store.set_triggers_enabled_bulk(mgd, trigger_ids, False)
+    if result["matched"] == 0:
+        params = urlencode({"error": "Nenhum trigger válido foi selecionado para inativar"})
+        return RedirectResponse(url=f"/triggers?{params}", status_code=303)
+
+    msg = f"{result['modified']} trigger(s) inativado(s)"
+    unchanged = result["matched"] - result["modified"]
+    if unchanged > 0:
+        msg += f"; {unchanged} já estava(m) inativo(s)"
+    params = urlencode({"msg": msg})
+    return RedirectResponse(url=f"/triggers?{params}", status_code=303)
 
 
 # --- Triggers: API JSON (Swagger) ---

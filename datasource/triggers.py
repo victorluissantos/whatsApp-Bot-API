@@ -132,6 +132,19 @@ def set_trigger_enabled(mgd, trigger_id: str, enabled: bool) -> Optional[dict]:
     return get_trigger(mgd, trigger_id)
 
 
+def set_triggers_enabled_bulk(mgd, trigger_ids: list[str], enabled: bool) -> dict:
+    cleaned_ids = [str(trigger_id).strip() for trigger_id in trigger_ids if str(trigger_id).strip()]
+    unique_ids = list(dict.fromkeys(cleaned_ids))
+    if not unique_ids:
+        return {"matched": 0, "modified": 0}
+
+    result = _coll(mgd).update_many(
+        {"trigger_id": {"$in": unique_ids}},
+        {"$set": {"enabled": bool(enabled), "updated_at": datetime.utcnow()}},
+    )
+    return {"matched": int(result.matched_count), "modified": int(result.modified_count)}
+
+
 def _default_schedule() -> dict:
     return {
         "days_of_week": [0, 1, 2, 3, 4, 5, 6],

@@ -99,7 +99,7 @@ class Run:
                     photo_url = src
                     break
 
-            unread_count = "1"
+            unread_count = "0"
             for el in chat_row.find_elements(By.XPATH, './/span[contains(@class, "xzpqnlu")]'):
                 tx = (el.text or "").strip()
                 if tx:
@@ -107,7 +107,7 @@ class Run:
                     if m:
                         unread_count = m.group(1)
                         break
-            if unread_count == "1":
+            if unread_count == "0":
                 try:
                     for el in chat_row.find_elements(
                         By.XPATH,

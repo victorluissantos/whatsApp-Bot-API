@@ -4,10 +4,10 @@ from __future__ import annotations
 import logging
 import re
 import time
-from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
 from datasource import async_send_queue
+from datasource import Messages
 from datasource import triggers as triggers_store
 from datasource.app_timezone import now_local
 
@@ -29,7 +29,7 @@ def reset_baseline() -> None:
     logger.info("Triggers: baseline reiniciado")
 
 
-def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict]) -> dict:
+def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], nav=None) -> dict:
     """
     Avalia chats que mudaram na lista de não lidas e enfileira respostas dos triggers.
     Retorna estatísticas do ciclo.
@@ -38,18 +38,22 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict]) ->
     stats = {"changed": 0, "matched": 0, "queued": 0, "skipped": 0, "errors": 0}
 
     if not _TRIGGER_BOOTSTRAPPED:
+        # Não engole unread existentes no bootstrap: chats com unread>0 ainda
+        # entram em diff_changed (prev_msg=None) e podem disparar. Só marca
+        # como já visto os que estão no painel sem contador (já lidos/irrelevantes).
         for chat in new_chats:
+            if _unread_int(chat) > 0:
+                continue
             key = _chat_key(chat)
             msg = (chat.get("lastMessage") or "").strip()
             if key and msg:
                 _TRIGGER_SEEN[key] = msg
         _TRIGGER_BOOTSTRAPPED = True
         logger.info(
-            "Triggers: baseline inicial (%s chats no painel). "
-            "Mensagens já presentes não disparam; a próxima mensagem nova sim.",
+            "Triggers: baseline inicial (%s chats marcados como já vistos; unread ainda serão avaliados).",
             len(_TRIGGER_SEEN),
         )
-        return stats
+        # Continua o fluxo normalmente para avaliar unread existentes.
 
     changed = diff_changed_chats(new_chats)
     stats["changed"] = len(changed)
@@ -64,10 +68,14 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict]) ->
         return stats
 
     now = now_local()
+    messages_runner = Messages.Run() if nav is not None else None
 
     for chat in changed:
         message_text = (chat.get("lastMessage") or "").strip()
         if not message_text or message_text == "Sem mensagem":
+            stats["skipped"] += 1
+            continue
+        if _unread_int(chat) <= 0:
             stats["skipped"] += 1
             continue
 
@@ -82,6 +90,16 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict]) ->
 
         dedup_key = f"{phone}|{message_text}"
         if _recently_processed(dedup_key):
+            stats["skipped"] += 1
+            continue
+        if messages_runner is not None and not _is_latest_message_incoming(
+            messages_runner, nav, phone, message_text
+        ):
+            logger.info(
+                "Triggers: chat %s msg=%r ignorado (última mensagem não recebida)",
+                phone,
+                message_text[:80],
+            )
             stats["skipped"] += 1
             continue
 
@@ -194,15 +212,71 @@ def _chat_key(chat: dict) -> str:
 
 
 def resolve_phone(chat: dict) -> Optional[str]:
-    """Extrai telefone numérico do chat (phone ou name)."""
+    """Extrai telefone numérico do chat (phone ou name), com DDI 55 quando possível."""
     for raw in (chat.get("phone"), chat.get("name")):
         if not raw:
             continue
         text = str(raw).strip()
         digits = re.sub(r"\D", "", text)
-        if len(digits) >= 10:
-            return digits
+        if len(digits) < 10:
+            continue
+        if not digits.startswith("55"):
+            digits = "55" + digits
+        return digits
     return None
+
+
+def _unread_int(chat: dict) -> int:
+    try:
+        return int(str(chat.get("unreadCount") or "0") or 0)
+    except ValueError:
+        return 0
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip()).lower()
+
+
+def _is_latest_message_incoming(messages_runner, nav, phone: str, preview_text: str) -> bool:
+    """
+    Confirma que a última mensagem relevante do chat é recebida.
+    Usa getMessages para evitar disparo em mensagem enviada pelo próprio bot/usuário.
+    Se não conseguir abrir o histórico, não bloqueia o trigger (fail-open).
+    """
+    try:
+        result = messages_runner.getMessages(nav, phone)
+    except Exception:
+        logger.exception(
+            "Triggers: falha ao abrir histórico para validar origem (%s); seguindo sem bloqueio",
+            phone,
+        )
+        return True
+    if not result or not result.get("success"):
+        logger.warning(
+            "Triggers: não foi possível validar origem em %s (%s); seguindo sem bloqueio",
+            phone,
+            (result or {}).get("error") if isinstance(result, dict) else "sem resultado",
+        )
+        return True
+    messages = result.get("messages") or []
+    if not messages:
+        return True
+
+    preview_norm = _normalize_text(preview_text)
+    if not preview_norm:
+        return True
+
+    # Varre de trás para frente e tenta casar com o preview do painel.
+    for msg in reversed(messages):
+        text_norm = _normalize_text(str(msg.get("message") or ""))
+        if not text_norm:
+            continue
+        if preview_norm in text_norm or text_norm in preview_norm:
+            return str(msg.get("origem") or "").strip().lower() == "recebida"
+
+    # Fallback: sem match textual claro, exige que a última mensagem do chat seja recebida.
+    last_origin = str(messages[-1].get("origem") or "").strip().lower()
+    return last_origin == "recebida"
 
 
 def _recently_processed(key: str) -> bool:
