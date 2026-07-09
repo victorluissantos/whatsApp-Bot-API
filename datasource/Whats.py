@@ -363,13 +363,28 @@ class Run:
 		pass
 
 	def resetPage(self, navegador=None):
-	    if navegador is None:
-	        raise Exception("Navegador não informado")
+		if navegador is None:
+			raise Exception("Navegador não informado")
 
-	    actions = ActionChains(navegador)
-	    actions.key_down(Keys.CONTROL).key_down(Keys.SHIFT).send_keys('r').key_up(Keys.SHIFT).key_up(Keys.CONTROL).perform()
-	    time.sleep(5)  # Aguarda recarregar
-	    return True
+		# CDP hard reload (equivalente a Ctrl+Shift+R), sem diálogo de confirmação.
+		try:
+			navegador.execute_cdp_cmd("Page.reload", {"ignoreCache": True})
+		except Exception as cdp_err:
+			logging.warning(f"CDP Page.reload falhou, tentando atalho de teclado: {cdp_err}")
+			try:
+				body = navegador.find_element(By.TAG_NAME, "body")
+				body.click()
+			except Exception:
+				pass
+			ActionChains(navegador).key_down(Keys.CONTROL).key_down(Keys.SHIFT).send_keys("r").key_up(
+				Keys.SHIFT
+			).key_up(Keys.CONTROL).perform()
+
+		WebDriverWait(navegador, 30).until(
+			EC.presence_of_element_located((By.ID, "app"))
+		)
+		time.sleep(2)
+		return True
 
 
 # if __name__ == "__main__":
