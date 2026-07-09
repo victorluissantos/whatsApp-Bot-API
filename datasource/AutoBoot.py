@@ -10,6 +10,7 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium import webdriver
 from decouple import Config, RepositoryEnv
 import pyperclip
+import os
 
 class WhatsAppBot:
 	
@@ -17,6 +18,19 @@ class WhatsAppBot:
 		
 		self.navegador = navegador
 		self.mongo = mongo
+
+	def _post_send_wait_seconds(self) -> float:
+		"""
+		Tempo de espera entre confirmar envio (Enter) e sair do chat.
+		Ajustável via env WA_POST_SEND_WAIT_SECONDS para cenários de rede lenta.
+		"""
+		raw = str(os.environ.get("WA_POST_SEND_WAIT_SECONDS", "2.5") or "2.5").strip()
+		try:
+			seconds = float(raw)
+		except ValueError:
+			seconds = 2.5
+		# Evita pausa exagerada por configuração inválida.
+		return max(0.0, min(seconds, 30.0))
 
 
 	def syncSendText(
@@ -187,6 +201,10 @@ class WhatsAppBot:
 			status = f"Erro ao enviar: {err_preview}"
 
 		if return_home:
+			post_send_wait = self._post_send_wait_seconds()
+			if post_send_wait > 0:
+				print(f"[DEPURACAO] Aguardando {post_send_wait:.2f}s antes de sair do chat")
+				time.sleep(post_send_wait)
 			# Volta para a home / lista lateral (poller de triggers depende do #pane-side)
 			try:
 				webdriver.ActionChains(self.navegador).send_keys(Keys.ESCAPE).perform()
