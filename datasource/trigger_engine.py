@@ -281,22 +281,24 @@ def _enqueue_candidates(
             )
 
         try:
-            job_id = async_send_queue.enqueue_job(
-                mgd,
-                phone,
-                trigger["reply_message"],
-                unic_sent=False,
-                unRead=True,
-                **enqueue_kwargs,
-            )
-            logger.info(
-                "Trigger %r disparado para %s (job %s) msg=%r",
-                trigger.get("name"),
-                phone,
-                job_id,
-                message_text[:80],
-            )
-            stats["queued"] += 1
+            reply_messages = triggers_store.get_reply_messages(trigger)
+            for reply_text in reply_messages:
+                job_id = async_send_queue.enqueue_job(
+                    mgd,
+                    phone,
+                    reply_text,
+                    unic_sent=False,
+                    unRead=True,
+                    **enqueue_kwargs,
+                )
+                logger.info(
+                    "Trigger %r disparado para %s (job %s) resposta=%r",
+                    trigger.get("name"),
+                    phone,
+                    job_id,
+                    reply_text[:80],
+                )
+                stats["queued"] += 1
             fired_for_chat = True
             _mark_processed(dedup_key)
         except Exception:
@@ -408,49 +410,55 @@ def _validate_and_send_inline(
 
         job_id = None
         try:
-            job_id = async_send_queue.create_inline_job(
-                mgd,
-                phone,
-                trigger["reply_message"],
-                unRead=True,
-                **enqueue_kwargs,
-            )
-            # Último envio desta abertura: volta à home; se houver mais, mantém aberto.
-            is_last = len(remaining) == 0
-            send_result = bot.syncSendText(
-                phone,
-                trigger["reply_message"],
-                unic_sent=False,
-                unRead=True,
-                skip_open=True,
-                return_home=is_last,
-            )
-            ok = send_result == "Enviado"
-            async_send_queue.finalize_job(mgd, job_id, ok, send_result)
-            if ok:
-                logger.info(
-                    "Trigger %r enviado inline para %s (job %s) msg=%r",
-                    trigger.get("name"),
+            reply_messages = triggers_store.get_reply_messages(trigger)
+            for msg_index, reply_text in enumerate(reply_messages):
+                job_id = async_send_queue.create_inline_job(
+                    mgd,
                     phone,
-                    job_id,
-                    message_text[:80],
+                    reply_text,
+                    unRead=True,
+                    **enqueue_kwargs,
                 )
-                stats["queued"] += 1
-                sent_any = True
-                _mark_processed(dedup_key)
-                chat_opened = not is_last
+                is_last_trigger = len(remaining) == 0
+                is_last_message = msg_index == len(reply_messages) - 1
+                is_last = is_last_trigger and is_last_message
+                send_result = bot.syncSendText(
+                    phone,
+                    reply_text,
+                    unic_sent=False,
+                    unRead=True,
+                    skip_open=True,
+                    return_home=is_last,
+                )
+                ok = send_result == "Enviado"
+                async_send_queue.finalize_job(mgd, job_id, ok, send_result)
+                if ok:
+                    logger.info(
+                        "Trigger %r enviado inline para %s (job %s) resposta=%r",
+                        trigger.get("name"),
+                        phone,
+                        job_id,
+                        reply_text[:80],
+                    )
+                    stats["queued"] += 1
+                    sent_any = True
+                    chat_opened = not is_last
+                else:
+                    triggers_store.release_execution_claim(
+                        mgd, trigger_id, contact_key, unique_cfg, now
+                    )
+                    stats["errors"] += 1
+                    logger.warning(
+                        "Trigger %r falhou no envio inline (%s): %s",
+                        trigger.get("name"),
+                        phone,
+                        send_result,
+                    )
+                    break
             else:
-                triggers_store.release_execution_claim(
-                    mgd, trigger_id, contact_key, unique_cfg, now
-                )
-                stats["errors"] += 1
-                logger.warning(
-                    "Trigger %r falhou no envio inline (%s): %s",
-                    trigger.get("name"),
-                    phone,
-                    send_result,
-                )
-                break
+                _mark_processed(dedup_key)
+                continue
+            break
         except Exception:
             stats["errors"] += 1
             triggers_store.release_execution_claim(

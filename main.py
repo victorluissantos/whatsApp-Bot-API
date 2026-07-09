@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from typing import Optional, Literal, Annotated
 import asyncio
 import json
@@ -28,6 +28,7 @@ from datasource import Mongo, AutoBoot, Chats, Whats, Messages
 from datasource import async_send_queue as async_queue
 from datasource import unread_pane_cache
 from datasource import triggers as triggers_store
+from datasource import trigger_simulator
 from datasource import trigger_engine
 from datasource.app_timezone import get_timezone_name, now_local
 from datasource import trigger_matcher
@@ -207,20 +208,42 @@ class TriggerCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     pattern: str = Field(..., min_length=1, max_length=500)
     case_sensitive: bool = False
-    reply_message: str = Field(..., min_length=1, max_length=800)
+    reply_messages: list[str] = Field(default_factory=list, max_length=triggers_store.MAX_REPLY_MESSAGES)
+    reply_message: Optional[str] = Field(None, max_length=triggers_store.MAX_REPLY_MESSAGE_LENGTH)
     enabled: bool = True
     schedule: TriggerScheduleModel = Field(default_factory=TriggerScheduleModel)
     unique: TriggerUniqueModel = Field(default_factory=TriggerUniqueModel)
+
+    @model_validator(mode="after")
+    def normalize_reply_messages(self):
+        messages = triggers_store.normalize_reply_messages(self.reply_messages)
+        if not messages and self.reply_message:
+            messages = triggers_store.normalize_reply_messages([self.reply_message])
+        triggers_store.validate_reply_messages(messages)
+        object.__setattr__(self, "reply_messages", messages)
+        object.__setattr__(self, "reply_message", messages[0] if messages else "")
+        return self
 
 
 class TriggerUpdateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     pattern: str = Field(..., min_length=1, max_length=500)
     case_sensitive: bool = False
-    reply_message: str = Field(..., min_length=1, max_length=800)
+    reply_messages: list[str] = Field(default_factory=list, max_length=triggers_store.MAX_REPLY_MESSAGES)
+    reply_message: Optional[str] = Field(None, max_length=triggers_store.MAX_REPLY_MESSAGE_LENGTH)
     enabled: bool = True
     schedule: TriggerScheduleModel = Field(default_factory=TriggerScheduleModel)
     unique: TriggerUniqueModel = Field(default_factory=TriggerUniqueModel)
+
+    @model_validator(mode="after")
+    def normalize_reply_messages(self):
+        messages = triggers_store.normalize_reply_messages(self.reply_messages)
+        if not messages and self.reply_message:
+            messages = triggers_store.normalize_reply_messages([self.reply_message])
+        triggers_store.validate_reply_messages(messages)
+        object.__setattr__(self, "reply_messages", messages)
+        object.__setattr__(self, "reply_message", messages[0] if messages else "")
+        return self
 
 
 class TriggerResponse(BaseModel):
@@ -228,6 +251,7 @@ class TriggerResponse(BaseModel):
     name: str
     pattern: str
     case_sensitive: bool
+    reply_messages: list[str]
     reply_message: str
     enabled: bool
     schedule: TriggerScheduleModel
@@ -256,6 +280,31 @@ class TriggerTestMatchResponse(BaseModel):
     matches: bool
     pattern: str
     message: str
+
+
+class SimulatorMessageRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000)
+    claimed_keys: list[str] = Field(default_factory=list)
+
+
+class SimulatorReplyItem(BaseModel):
+    text: str
+    trigger_id: str
+    trigger_name: str
+
+
+class SimulatorEventItem(BaseModel):
+    trigger_id: str
+    trigger_name: str
+    status: str
+    reason: str
+
+
+class SimulatorMessageResponse(BaseModel):
+    replies: list[SimulatorReplyItem]
+    events: list[SimulatorEventItem]
+    claimed_keys: list[str]
+    evaluated_at: str
 
 
 TRIGGER_DAY_OPTIONS = [
@@ -288,7 +337,7 @@ def _payload_from_trigger_body(body: TriggerCreateRequest | TriggerUpdateRequest
         "name": body.name,
         "pattern": body.pattern,
         "case_sensitive": body.case_sensitive,
-        "reply_message": body.reply_message,
+        "reply_messages": body.reply_messages,
         "enabled": body.enabled,
         "schedule": triggers_store.normalize_schedule(body.schedule.model_dump()),
         "unique": triggers_store.normalize_unique(body.unique.model_dump()),
@@ -298,7 +347,7 @@ def _payload_from_trigger_body(body: TriggerCreateRequest | TriggerUpdateRequest
 def _form_to_trigger_payload(
     name: str,
     pattern: str,
-    reply_message: str,
+    reply_messages: list[str],
     case_sensitive: Optional[str],
     days_of_week: list[str],
     all_day: Optional[str],
@@ -313,7 +362,7 @@ def _form_to_trigger_payload(
         "name": name,
         "pattern": pattern,
         "case_sensitive": case_sensitive is not None,
-        "reply_message": reply_message,
+        "reply_messages": triggers_store.validate_reply_messages(reply_messages),
         "enabled": enabled is not None,
         "schedule": triggers_store.normalize_schedule(
             {
@@ -334,7 +383,7 @@ def _default_trigger_form() -> dict:
         "name": "",
         "pattern": "",
         "case_sensitive": False,
-        "reply_message": "",
+        "reply_messages": [""],
         "days_of_week": [0, 1, 2, 3, 4, 5, 6],
         "all_day": True,
         "time_start": "09:00",
@@ -348,11 +397,12 @@ def _default_trigger_form() -> dict:
 def _trigger_doc_to_form(doc: dict) -> dict:
     schedule = doc.get("schedule") or {}
     unique = doc.get("unique") or {}
+    reply_messages = triggers_store.get_reply_messages(doc) or [""]
     return {
         "name": doc.get("name", ""),
         "pattern": doc.get("pattern", ""),
         "case_sensitive": bool(doc.get("case_sensitive")),
-        "reply_message": doc.get("reply_message", ""),
+        "reply_messages": reply_messages,
         "days_of_week": schedule.get("days_of_week") or [0, 1, 2, 3, 4, 5, 6],
         "all_day": bool(schedule.get("all_day", True)),
         "time_start": schedule.get("time_start", "09:00"),
@@ -360,6 +410,34 @@ def _trigger_doc_to_form(doc: dict) -> dict:
         "unique_enabled": bool(unique.get("enabled")),
         "unique_scope": unique.get("scope", "day"),
         "enabled": bool(doc.get("enabled", True)),
+    }
+
+
+def _form_from_submission(
+    name: str,
+    pattern: str,
+    reply_messages: list[str],
+    case_sensitive: Optional[str],
+    days_of_week: list[str],
+    all_day: Optional[str],
+    time_start: str,
+    time_end: str,
+    unique_enabled: Optional[str],
+    unique_scope: str,
+    enabled: Optional[str],
+) -> dict:
+    return {
+        "name": name,
+        "pattern": pattern,
+        "case_sensitive": case_sensitive is not None,
+        "reply_messages": triggers_store.normalize_reply_messages(reply_messages) or [""],
+        "days_of_week": [int(d) for d in days_of_week if str(d).isdigit()],
+        "all_day": all_day is not None,
+        "time_start": time_start,
+        "time_end": time_end,
+        "unique_enabled": unique_enabled is not None,
+        "unique_scope": unique_scope,
+        "enabled": enabled is not None,
     }
 
 
@@ -796,6 +874,39 @@ async def mongo_import_db(
         return RedirectResponse(url=f"/mongo?{params}", status_code=303)
 
 
+# --- Simulador de triggers (chat em memória) ---
+
+@app.get("/simulator", response_class=HTMLResponse, include_in_schema=False)
+async def trigger_simulator_page(request: Request):
+    active_count = len(triggers_store.list_triggers(mgd, enabled_only=True))
+    return templates.TemplateResponse(
+        "trigger_simulator.html",
+        {
+            "request": request,
+            "active_nav": "simulator",
+            "active_trigger_count": active_count,
+        },
+    )
+
+
+@app.post("/simulator/message", tags=["Simulator"], response_model=SimulatorMessageResponse)
+async def simulator_evaluate_message(body: SimulatorMessageRequest):
+    now = now_local()
+    active_triggers = triggers_store.list_triggers(mgd, enabled_only=True)
+    result = trigger_simulator.evaluate_message(
+        body.message,
+        active_triggers,
+        set(body.claimed_keys),
+        now=now,
+    )
+    return SimulatorMessageResponse(
+        replies=result["replies"],
+        events=result["events"],
+        claimed_keys=result["claimed_keys"],
+        evaluated_at=now.isoformat(),
+    )
+
+
 # --- Triggers: telas HTML (rotas estáticas antes de /triggers/{id}) ---
 
 @app.get("/triggers", response_class=HTMLResponse, include_in_schema=False)
@@ -839,7 +950,7 @@ async def triggers_create_submit(
     request: Request,
     name: str = Form(...),
     pattern: str = Form(...),
-    reply_message: str = Form(...),
+    reply_messages: Annotated[list[str], Form()] = [],
     case_sensitive: Optional[str] = Form(None),
     days_of_week: Annotated[list[str], Form()] = [],
     all_day: Optional[str] = Form(None),
@@ -850,13 +961,16 @@ async def triggers_create_submit(
     enabled: Optional[str] = Form(None),
 ):
     form_data = _form_to_trigger_payload(
-        name, pattern, reply_message, case_sensitive, days_of_week,
+        name, pattern, reply_messages, case_sensitive, days_of_week,
         all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
     )
     try:
         triggers_store.create_trigger(mgd, form_data)
     except trigger_matcher.PatternSyntaxError as e:
         error_msg = f"Padrão inválido: {e}"
+        status = 400
+    except ValueError as e:
+        error_msg = str(e)
         status = 400
     except Exception as e:
         error_msg = f"Erro ao criar trigger: {e}"
@@ -871,19 +985,10 @@ async def triggers_create_submit(
             "active_nav": "triggers",
             "is_edit": False,
             "trigger": None,
-            "form": {
-                "name": name,
-                "pattern": pattern,
-                "case_sensitive": case_sensitive is not None,
-                "reply_message": reply_message,
-                "days_of_week": [int(d) for d in days_of_week if str(d).isdigit()],
-                "all_day": all_day is not None,
-                "time_start": time_start,
-                "time_end": time_end,
-                "unique_enabled": unique_enabled is not None,
-                "unique_scope": unique_scope,
-                "enabled": enabled is not None,
-            },
+            "form": _form_from_submission(
+                name, pattern, reply_messages, case_sensitive, days_of_week,
+                all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
+            ),
             "day_options": TRIGGER_DAY_OPTIONS,
             "unique_scopes": TRIGGER_UNIQUE_SCOPE_OPTIONS,
             "error": error_msg,
@@ -974,7 +1079,7 @@ async def triggers_edit_submit(
     trigger_id: str,
     name: str = Form(...),
     pattern: str = Form(...),
-    reply_message: str = Form(...),
+    reply_messages: Annotated[list[str], Form()] = [],
     case_sensitive: Optional[str] = Form(None),
     days_of_week: Annotated[list[str], Form()] = [],
     all_day: Optional[str] = Form(None),
@@ -985,7 +1090,7 @@ async def triggers_edit_submit(
     enabled: Optional[str] = Form(None),
 ):
     form_data = _form_to_trigger_payload(
-        name, pattern, reply_message, case_sensitive, days_of_week,
+        name, pattern, reply_messages, case_sensitive, days_of_week,
         all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
     )
     try:
@@ -998,22 +1103,31 @@ async def triggers_edit_submit(
                 "active_nav": "triggers",
                 "is_edit": True,
                 "trigger": {"id": trigger_id},
-                "form": {
-                    "name": name,
-                    "pattern": pattern,
-                    "case_sensitive": case_sensitive is not None,
-                    "reply_message": reply_message,
-                    "days_of_week": [int(d) for d in days_of_week if str(d).isdigit()],
-                    "all_day": all_day is not None,
-                    "time_start": time_start,
-                    "time_end": time_end,
-                    "unique_enabled": unique_enabled is not None,
-                    "unique_scope": unique_scope,
-                    "enabled": enabled is not None,
-                },
+                "form": _form_from_submission(
+                    name, pattern, reply_messages, case_sensitive, days_of_week,
+                    all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
+                ),
                 "day_options": TRIGGER_DAY_OPTIONS,
                 "unique_scopes": TRIGGER_UNIQUE_SCOPE_OPTIONS,
                 "error": f"Padrão inválido: {e}",
+            },
+            status_code=400,
+        )
+    except ValueError as e:
+        return templates.TemplateResponse(
+            "triggers_form.html",
+            {
+                "request": request,
+                "active_nav": "triggers",
+                "is_edit": True,
+                "trigger": {"id": trigger_id},
+                "form": _form_from_submission(
+                    name, pattern, reply_messages, case_sensitive, days_of_week,
+                    all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
+                ),
+                "day_options": TRIGGER_DAY_OPTIONS,
+                "unique_scopes": TRIGGER_UNIQUE_SCOPE_OPTIONS,
+                "error": str(e),
             },
             status_code=400,
         )
@@ -1090,6 +1204,8 @@ async def api_create_trigger(body: TriggerCreateRequest):
         doc = triggers_store.create_trigger(mgd, _payload_from_trigger_body(body))
     except trigger_matcher.PatternSyntaxError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return _trigger_to_response(doc)
 
 
@@ -1108,6 +1224,8 @@ async def api_update_trigger(trigger_id: str, body: TriggerUpdateRequest):
     try:
         doc = triggers_store.update_trigger(mgd, trigger_id, _payload_from_trigger_body(body))
     except trigger_matcher.PatternSyntaxError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not doc:
         raise HTTPException(status_code=404, detail="Trigger não encontrado")

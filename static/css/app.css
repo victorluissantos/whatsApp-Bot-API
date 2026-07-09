@@ -79,11 +79,17 @@ body {
     padding: 8px 10px;
 }
 
-.nav-link-icon svg {
+.nav-link-icon svg,
+.nav-link-icon .fa-solid,
+.nav-link-icon .fa-regular,
+.nav-link-icon .fa-brands {
     width: 16px;
     height: 16px;
+    font-size: 16px;
+    line-height: 1;
     fill: currentColor;
     display: block;
+    text-align: center;
 }
 
 .nav-menu button {
@@ -504,6 +510,22 @@ button.btn-sm,
 .form-group textarea {
     min-height: 120px;
     resize: vertical;
+}
+
+.reply-messages-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.reply-message-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+}
+
+.reply-message-row textarea {
+    flex: 1;
 }
 
 .checkbox-row,

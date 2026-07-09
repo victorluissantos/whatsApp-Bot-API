@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 TRIGGERS_COLLECTION = "wa_triggers"
 EXECUTIONS_COLLECTION = "wa_trigger_executions"
 EXPORT_SCHEMA_VERSION = 1
+MAX_REPLY_MESSAGES = 3
+MAX_REPLY_MESSAGE_LENGTH = 800
 
 UNIQUE_SCOPES = ("minute", "hour", "day", "week", "month", "year", "forever")
 
@@ -40,12 +42,58 @@ def _iso_utc(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() + "Z"
 
 
+def normalize_reply_messages(raw) -> list[str]:
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, str):
+        items = [raw]
+    else:
+        items = []
+    messages: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text:
+            messages.append(text)
+    return messages
+
+
+def get_reply_messages(doc: dict) -> list[str]:
+    messages = normalize_reply_messages(doc.get("reply_messages"))
+    if messages:
+        return messages
+    legacy = str(doc.get("reply_message") or "").strip()
+    return [legacy] if legacy else []
+
+
+def validate_reply_messages(messages: list[str], *, label: str = "mensagem") -> list[str]:
+    cleaned = normalize_reply_messages(messages)
+    if not cleaned:
+        raise ValueError(f"Pelo menos uma {label} de resposta é obrigatória")
+    if len(cleaned) > MAX_REPLY_MESSAGES:
+        raise ValueError(f"No máximo {MAX_REPLY_MESSAGES} mensagens de resposta")
+    for index, message in enumerate(cleaned, start=1):
+        if len(message) > MAX_REPLY_MESSAGE_LENGTH:
+            raise ValueError(
+                f"{label.capitalize()} {index} excede {MAX_REPLY_MESSAGE_LENGTH} caracteres"
+            )
+    return cleaned
+
+
+def _reply_messages_from_data(data: dict) -> list[str]:
+    if data.get("reply_messages") is not None:
+        return validate_reply_messages(data["reply_messages"])
+    return validate_reply_messages([data.get("reply_message", "")])
+
+
 def _doc_to_dict(doc: dict) -> dict:
     out = dict(doc)
     out.pop("_id", None)
     out["id"] = out.pop("trigger_id")
     out["created_at"] = _iso_utc(out.get("created_at"))
     out["updated_at"] = _iso_utc(out.get("updated_at"))
+    messages = get_reply_messages(out)
+    out["reply_messages"] = messages
+    out["reply_message"] = messages[0] if messages else ""
     return out
 
 
@@ -87,7 +135,7 @@ def create_trigger(mgd, data: dict) -> dict:
         "name": data["name"].strip(),
         "pattern": pattern,
         "case_sensitive": bool(data.get("case_sensitive", False)),
-        "reply_message": data["reply_message"].strip(),
+        "reply_messages": _reply_messages_from_data(data),
         "enabled": bool(data.get("enabled", True)),
         "schedule": data.get("schedule") or _default_schedule(),
         "unique": data.get("unique") or _default_unique(),
@@ -108,13 +156,16 @@ def update_trigger(mgd, trigger_id: str, data: dict) -> Optional[dict]:
         "name": data["name"].strip(),
         "pattern": pattern,
         "case_sensitive": bool(data.get("case_sensitive", False)),
-        "reply_message": data["reply_message"].strip(),
+        "reply_messages": _reply_messages_from_data(data),
         "enabled": bool(data.get("enabled", True)),
         "schedule": data.get("schedule") or _default_schedule(),
         "unique": data.get("unique") or _default_unique(),
         "updated_at": datetime.utcnow(),
     }
-    _coll(mgd).update_one({"trigger_id": trigger_id}, {"$set": update})
+    _coll(mgd).update_one(
+        {"trigger_id": trigger_id},
+        {"$set": update, "$unset": {"reply_message": ""}},
+    )
     return get_trigger(mgd, trigger_id)
 
 
@@ -376,7 +427,7 @@ def _trigger_export_item(doc: dict) -> dict:
         "name": doc["name"],
         "pattern": doc["pattern"],
         "case_sensitive": doc.get("case_sensitive", False),
-        "reply_message": doc["reply_message"],
+        "reply_messages": get_reply_messages(doc),
         "enabled": doc.get("enabled", True),
         "schedule": doc.get("schedule") or _default_schedule(),
         "unique": doc.get("unique") or _default_unique(),
@@ -397,13 +448,14 @@ def _validate_import_item(raw: dict, index: int) -> dict:
         raise ValueError(f"Item {index}: deve ser um objeto")
     name = str(raw.get("name") or "").strip()
     pattern = str(raw.get("pattern") or "").strip()
-    reply = str(raw.get("reply_message") or "").strip()
     if not name:
         raise ValueError(f"Item {index}: campo 'name' é obrigatório")
     if not pattern:
         raise ValueError(f"Item {index}: campo 'pattern' é obrigatório")
-    if not reply:
-        raise ValueError(f"Item {index}: campo 'reply_message' é obrigatório")
+    try:
+        reply_messages = _reply_messages_from_data(raw)
+    except ValueError as e:
+        raise ValueError(f"Item {index}: {e}") from e
     try:
         validate_trigger_pattern(pattern)
     except trigger_matcher.PatternSyntaxError as e:
@@ -412,7 +464,7 @@ def _validate_import_item(raw: dict, index: int) -> dict:
         "name": name,
         "pattern": pattern,
         "case_sensitive": bool(raw.get("case_sensitive", False)),
-        "reply_message": reply,
+        "reply_messages": reply_messages,
         "enabled": bool(raw.get("enabled", True)),
         "schedule": normalize_schedule(raw.get("schedule") or {}),
         "unique": normalize_unique(raw.get("unique") or {}),

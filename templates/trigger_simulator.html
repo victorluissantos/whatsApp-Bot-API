@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+
+{% block title %}Simulador — WhatsApp Bot API{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="/static/css/simulator.css">
+<style>
+.page-wrap:has(.simulator-page) {
+    padding: 0;
+    max-width: none;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="simulator-page">
+    <div class="simulator-shell">
+        <header class="simulator-header">
+            <div class="simulator-header-avatar" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7v1h-1.5a2.5 2.5 0 0 0 0 5H17v2a2 2 0 0 1-4 0v-2H6.5a2.5 2.5 0 0 0 0-5H5v-1a7 7 0 0 1 7-7h1V5.73A2 2 0 0 1 12 2zm-4 9.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm8 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z"></path>
+                </svg>
+            </div>
+            <div class="simulator-header-info">
+                <h1>Simulador Bot</h1>
+                <p>{{ active_trigger_count }} trigger(s) ativo(s) · sem persistência</p>
+            </div>
+            <div class="simulator-header-actions">
+                <button type="button" id="toggleDebugBtn" onclick="toggleDebugPanel()">Debug</button>
+                <button type="button" onclick="clearChat()">Limpar</button>
+            </div>
+        </header>
+
+        <div id="chatMessages" class="simulator-messages">
+            <div class="simulator-empty" id="chatEmpty">
+                Envie uma mensagem para testar o comportamento dos triggers.<br>
+                Nada é salvo — ao recarregar a página, o chat zera.
+            </div>
+        </div>
+
+        <form class="simulator-composer" id="chatForm" onsubmit="sendMessage(event)">
+            <textarea
+                id="messageInput"
+                rows="1"
+                maxlength="2000"
+                placeholder="Digite uma mensagem"
+                aria-label="Mensagem"
+            ></textarea>
+            <button type="submit" class="simulator-send-btn" id="sendBtn" aria-label="Enviar">
+                <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+                </svg>
+            </button>
+        </form>
+
+        <div class="simulator-debug" id="debugPanel" style="display:none;">
+            <div class="simulator-debug-header">
+                <span>Avaliação dos triggers</span>
+                <span id="debugTime"></span>
+            </div>
+            <div class="simulator-debug-body" id="debugBody">
+                <div class="simulator-debug-item skipped">Aguardando mensagem...</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+let claimedKeys = [];
+let sending = false;
+
+const chatMessages = document.getElementById('chatMessages');
+const chatEmpty = document.getElementById('chatEmpty');
+const messageInput = document.getElementById('messageInput');
+const sendBtn = document.getElementById('sendBtn');
+const debugPanel = document.getElementById('debugPanel');
+const debugBody = document.getElementById('debugBody');
+const debugTime = document.getElementById('debugTime');
+
+function formatTime(date = new Date()) {
+    return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function scrollToBottom() {
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function createBubble(text, direction, meta) {
+    const row = document.createElement('div');
+    row.className = `simulator-msg-row ${direction}`;
+
+    const bubble = document.createElement('div');
+    bubble.className = `simulator-bubble ${direction}`;
+
+    const content = document.createElement('div');
+    content.className = 'simulator-bubble-text';
+    content.textContent = text;
+    bubble.appendChild(content);
+
+    if (meta) {
+        const tag = document.createElement('span');
+        tag.className = 'simulator-bubble-tag';
+        tag.textContent = meta;
+        bubble.appendChild(tag);
+    }
+
+    const time = document.createElement('span');
+    time.className = 'simulator-bubble-meta';
+    time.textContent = formatTime();
+    bubble.appendChild(time);
+
+    row.appendChild(bubble);
+    return row;
+}
+
+function showTyping() {
+    const row = document.createElement('div');
+    row.className = 'simulator-msg-row incoming';
+    row.id = 'typingIndicator';
+    row.innerHTML = '<div class="simulator-typing"><span></span><span></span><span></span></div>';
+    chatMessages.appendChild(row);
+    scrollToBottom();
+}
+
+function hideTyping() {
+    document.getElementById('typingIndicator')?.remove();
+}
+
+function renderDebug(events, evaluatedAt) {
+    debugTime.textContent = evaluatedAt
+        ? new Date(evaluatedAt).toLocaleString('pt-BR')
+        : '';
+    if (!events.length) {
+        debugBody.innerHTML = '<div class="simulator-debug-item skipped">Nenhum trigger avaliado.</div>';
+        return;
+    }
+    debugBody.innerHTML = events.map((event) => `
+        <div class="simulator-debug-item ${event.status}">
+            <strong>${event.trigger_name}</strong> — ${event.reason}
+        </div>
+    `).join('');
+}
+
+function toggleDebugPanel() {
+    const visible = debugPanel.style.display !== 'none';
+    debugPanel.style.display = visible ? 'none' : 'block';
+}
+
+function clearChat() {
+    claimedKeys = [];
+    chatMessages.innerHTML = '';
+    chatMessages.appendChild(chatEmpty);
+    chatEmpty.style.display = 'block';
+    renderDebug([], null);
+    messageInput.focus();
+}
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendMessage(event) {
+    event.preventDefault();
+    if (sending) return;
+
+    const text = messageInput.value.trim();
+    if (!text) return;
+
+    sending = true;
+    sendBtn.disabled = true;
+    chatEmpty.style.display = 'none';
+
+    chatMessages.appendChild(createBubble(text, 'outgoing'));
+    messageInput.value = '';
+    messageInput.style.height = 'auto';
+    scrollToBottom();
+
+    showTyping();
+
+    try {
+        const response = await fetch('/simulator/message', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: text, claimed_keys: claimedKeys }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.detail || JSON.stringify(data));
+        }
+
+        claimedKeys = data.claimed_keys || [];
+        renderDebug(data.events || [], data.evaluated_at);
+
+        hideTyping();
+
+        const replies = data.replies || [];
+        if (!replies.length) {
+            scrollToBottom();
+            return;
+        }
+
+        for (let i = 0; i < replies.length; i += 1) {
+            const reply = replies[i];
+            if (i > 0) {
+                showTyping();
+                await sleep(500);
+                hideTyping();
+            }
+            chatMessages.appendChild(
+                createBubble(reply.text, 'incoming', reply.trigger_name)
+            );
+            scrollToBottom();
+        }
+    } catch (err) {
+        hideTyping();
+        chatMessages.appendChild(
+            createBubble(`Erro na simulação: ${err.message}`, 'incoming', 'Sistema')
+        );
+        scrollToBottom();
+    } finally {
+        sending = false;
+        sendBtn.disabled = false;
+        messageInput.focus();
+    }
+}
+
+messageInput.addEventListener('input', function () {
+    this.style.height = 'auto';
+    this.style.height = `${Math.min(this.scrollHeight, 120)}px`;
+});
+
+messageInput.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        document.getElementById('chatForm').requestSubmit();
+    }
+});
+</script>
+{% endblock %}

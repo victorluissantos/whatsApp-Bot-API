@@ -49,8 +49,22 @@
         </div>
 
         <div class="form-group">
-            <label for="reply_message">Mensagem de resposta</label>
-            <textarea id="reply_message" name="reply_message" maxlength="800" required>{{ form.reply_message }}</textarea>
+            <label>Mensagens de resposta</label>
+            <span class="hint">Até 3 mensagens, enviadas em sequência quando o trigger disparar.</span>
+            <div id="replyMessagesList" class="reply-messages-list">
+                {% for msg in form.reply_messages %}
+                <div class="reply-message-row">
+                    <textarea name="reply_messages" maxlength="800" required>{{ msg }}</textarea>
+                    <button type="button" class="btn btn-secondary btn-sm btn-remove-reply" onclick="removeReplyRow(this)">Remover</button>
+                </div>
+                {% else %}
+                <div class="reply-message-row">
+                    <textarea name="reply_messages" maxlength="800" required></textarea>
+                    <button type="button" class="btn btn-secondary btn-sm btn-remove-reply" onclick="removeReplyRow(this)">Remover</button>
+                </div>
+                {% endfor %}
+            </div>
+            <button type="button" id="addReplyBtn" class="btn btn-secondary btn-sm" onclick="addReplyRow()" style="margin-top:8px;">+ Adicionar mensagem</button>
         </div>
 
         <div class="form-group">
@@ -121,6 +135,36 @@
 
 {% block extra_scripts %}
 <script>
+const MAX_REPLY_MESSAGES = 3;
+
+function updateReplyControls() {
+    const rows = document.querySelectorAll('#replyMessagesList .reply-message-row');
+    const addBtn = document.getElementById('addReplyBtn');
+    addBtn.style.display = rows.length >= MAX_REPLY_MESSAGES ? 'none' : '';
+    rows.forEach((row) => {
+        const removeBtn = row.querySelector('.btn-remove-reply');
+        removeBtn.style.display = rows.length > 1 ? '' : 'none';
+    });
+}
+
+function addReplyRow() {
+    const list = document.getElementById('replyMessagesList');
+    const rows = list.querySelectorAll('.reply-message-row');
+    if (rows.length >= MAX_REPLY_MESSAGES) return;
+    const template = rows[0].cloneNode(true);
+    template.querySelector('textarea').value = '';
+    list.appendChild(template);
+    updateReplyControls();
+}
+
+function removeReplyRow(btn) {
+    const list = document.getElementById('replyMessagesList');
+    const rows = list.querySelectorAll('.reply-message-row');
+    if (rows.length <= 1) return;
+    btn.closest('.reply-message-row').remove();
+    updateReplyControls();
+}
+
 function toggleTimeFields() {
     const allDay = document.getElementById('all_day').checked;
     document.getElementById('timeFields').classList.toggle('hidden', allDay);
@@ -157,5 +201,7 @@ function testPattern() {
             resultDiv.textContent = 'Erro: ' + err.message;
         });
 }
+
+updateReplyControls();
 </script>
 {% endblock %}
