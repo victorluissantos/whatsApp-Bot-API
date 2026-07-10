@@ -91,6 +91,7 @@ def enqueue_job(
     unic_sent: bool,
     unRead: bool = False,
     trigger_id: Optional[str] = None,
+    brain_id: Optional[str] = None,
     contact_key: Optional[str] = None,
     scope_key: Optional[str] = None,
 ) -> str:
@@ -106,6 +107,8 @@ def enqueue_job(
     }
     if trigger_id:
         doc["trigger_id"] = str(trigger_id)
+    if brain_id:
+        doc["brain_id"] = str(brain_id)
     if contact_key:
         doc["contact_key"] = str(contact_key)
     if scope_key:
@@ -137,6 +140,7 @@ def create_inline_job(
     message: str,
     unRead: bool = True,
     trigger_id: Optional[str] = None,
+    brain_id: Optional[str] = None,
     contact_key: Optional[str] = None,
     scope_key: Optional[str] = None,
 ) -> str:
@@ -157,6 +161,8 @@ def create_inline_job(
     }
     if trigger_id:
         doc["trigger_id"] = str(trigger_id)
+    if brain_id:
+        doc["brain_id"] = str(brain_id)
     if contact_key:
         doc["contact_key"] = str(contact_key)
     if scope_key:
@@ -244,14 +250,28 @@ def _soft_delete_legacy_history(mgd, phone: str, message: str) -> None:
 
 def _release_trigger_claim_from_job(mgd, doc: dict) -> None:
     trigger_id = (doc.get("trigger_id") or "").strip()
+    brain_id = (doc.get("brain_id") or "").strip()
     contact_key = (doc.get("contact_key") or "").strip()
     scope_key = (doc.get("scope_key") or "").strip()
     phone = str(doc.get("phone") or "")
     try:
         from datasource import triggers as triggers_store
+        from datasource import brain as brain_store
         from datasource import trigger_engine
 
-        if trigger_id:
+        if brain_id:
+            if contact_key and scope_key:
+                brain_store.release_execution_claim_by_keys(
+                    mgd, contact_key, scope_key
+                )
+            released = brain_store.release_execution_claims_for_contact(mgd, phone)
+            if released:
+                logger.info(
+                    "Unique liberado do brain após delete (%s claim(s), phone=%s)",
+                    released,
+                    phone,
+                )
+        elif trigger_id:
             # Só este trigger — não zera unique dos outros (Ajuda, Encerramento, etc.).
             if contact_key and scope_key:
                 triggers_store.release_execution_claim_by_keys(

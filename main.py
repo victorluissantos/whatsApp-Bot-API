@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ConfigDict, model_validator
-from typing import Optional, Literal, Annotated
+from typing import Any, Optional, Literal, Annotated
 import asyncio
 import json
 import os
@@ -32,6 +32,7 @@ from datasource import trigger_simulator
 from datasource import trigger_engine
 from datasource.app_timezone import get_timezone_name, now_local
 from datasource import trigger_matcher
+from datasource import brain as brain_store
 
 # Configuração de logging
 logging.basicConfig(level=logging.DEBUG)
@@ -285,6 +286,11 @@ class TriggerTestMatchResponse(BaseModel):
 class SimulatorMessageRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     claimed_keys: list[str] = Field(default_factory=list)
+    phone: Optional[str] = Field(
+        None,
+        max_length=20,
+        description="Telefone para simular o Brain (substitui o parâmetro do curl)",
+    )
 
 
 class SimulatorReplyItem(BaseModel):
@@ -305,6 +311,22 @@ class SimulatorMessageResponse(BaseModel):
     events: list[SimulatorEventItem]
     claimed_keys: list[str]
     evaluated_at: str
+
+
+class BrainTestRequest(BaseModel):
+    curl: str = Field(..., min_length=1, description="Comando curl completo para teste")
+    test_phone: Optional[str] = Field(
+        None,
+        max_length=20,
+        description="Telefone para substituir {celular} no teste",
+    )
+
+
+class BrainTestResponse(BaseModel):
+    success: bool = True
+    data: Any
+    paths: list[dict]
+    phone_param: str = ""
 
 
 TRIGGER_DAY_OPTIONS = [
@@ -874,17 +896,124 @@ async def mongo_import_db(
         return RedirectResponse(url=f"/mongo?{params}", status_code=303)
 
 
+# --- Brain ---
+
+@app.get("/brain", response_class=HTMLResponse, include_in_schema=False)
+async def brain_page(
+    request: Request,
+    msg: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+):
+    config = brain_store.get_config(mgd)
+    return templates.TemplateResponse(
+        "brain.html",
+        {
+            "request": request,
+            "active_nav": "brain",
+            "config": config,
+            "form": brain_store.config_to_form(config),
+            "day_options": TRIGGER_DAY_OPTIONS,
+            "unique_scopes": TRIGGER_UNIQUE_SCOPE_OPTIONS,
+            "message": msg,
+            "error": error,
+        },
+    )
+
+
+@app.post("/brain/test", tags=["Brain"], response_model=BrainTestResponse)
+async def brain_test_curl(body: BrainTestRequest):
+    try:
+        result = brain_store.test_curl(body.curl, test_phone=body.test_phone)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Erro ao executar curl: {e}") from e
+    return BrainTestResponse(**result)
+
+
+@app.post("/brain/save", response_class=HTMLResponse, include_in_schema=False)
+async def brain_save_submit(
+    request: Request,
+    curl: str = Form(...),
+    response_field: str = Form(...),
+    enabled: Optional[str] = Form(None),
+    days_of_week: Annotated[list[str], Form()] = [],
+    all_day: Optional[str] = Form(None),
+    time_start: str = Form("09:00"),
+    time_end: str = Form("18:00"),
+    unique_enabled: Optional[str] = Form(None),
+    unique_scope: str = Form("day"),
+):
+    payload = brain_store.form_to_payload(
+        curl,
+        response_field,
+        enabled,
+        days_of_week,
+        all_day,
+        time_start,
+        time_end,
+        unique_enabled,
+        unique_scope,
+    )
+    try:
+        brain_store.save_config(mgd, payload)
+    except ValueError as e:
+        config = brain_store.get_config(mgd)
+        return templates.TemplateResponse(
+            "brain.html",
+            {
+                "request": request,
+                "active_nav": "brain",
+                "config": config,
+                "form": brain_store.config_to_form(
+                    {
+                        **brain_store.config_to_form(config),
+                        "curl": curl,
+                        "response_field": response_field,
+                        "enabled": enabled is not None,
+                    }
+                ),
+                "day_options": TRIGGER_DAY_OPTIONS,
+                "unique_scopes": TRIGGER_UNIQUE_SCOPE_OPTIONS,
+                "message": None,
+                "error": str(e),
+            },
+            status_code=400,
+        )
+    except Exception as e:
+        config = brain_store.get_config(mgd)
+        return templates.TemplateResponse(
+            "brain.html",
+            {
+                "request": request,
+                "active_nav": "brain",
+                "config": config,
+                "form": brain_store.config_to_form(config),
+                "day_options": TRIGGER_DAY_OPTIONS,
+                "unique_scopes": TRIGGER_UNIQUE_SCOPE_OPTIONS,
+                "message": None,
+                "error": f"Erro ao salvar Brain: {e}",
+            },
+            status_code=400,
+        )
+
+    return RedirectResponse(url="/brain?msg=Brain+salvo+com+sucesso", status_code=303)
+
+
 # --- Simulador de triggers (chat em memória) ---
 
 @app.get("/simulator", response_class=HTMLResponse, include_in_schema=False)
 async def trigger_simulator_page(request: Request):
     active_count = len(triggers_store.list_triggers(mgd, enabled_only=True))
+    brain_config = brain_store.get_config(mgd)
+    brain_active = bool(brain_config and brain_config.get("enabled"))
     return templates.TemplateResponse(
         "trigger_simulator.html",
         {
             "request": request,
             "active_nav": "simulator",
             "active_trigger_count": active_count,
+            "brain_active": brain_active,
         },
     )
 
@@ -898,6 +1027,8 @@ async def simulator_evaluate_message(body: SimulatorMessageRequest):
         active_triggers,
         set(body.claimed_keys),
         now=now,
+        mgd=mgd,
+        phone=body.phone,
     )
     return SimulatorMessageResponse(
         replies=result["replies"],
@@ -1844,6 +1975,7 @@ async def startup_event():
     global selenium_thread
     async_queue.ensure_queue_indexes(mgd)
     triggers_store.ensure_indexes(mgd)
+    brain_store.ensure_indexes(mgd)
     async_queue.ensure_rabbit_topology()
     logging.info(
         "Fuso horário da aplicação: %s | agora local: %s",

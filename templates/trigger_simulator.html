@@ -23,13 +23,25 @@
             </div>
             <div class="simulator-header-info">
                 <h1>Simulador Bot</h1>
-                <p>{{ active_trigger_count }} trigger(s) ativo(s) · sem persistência</p>
+                <p>{{ active_trigger_count }} trigger(s) ativo(s){% if brain_active %} · Brain ativo{% endif %} · sem persistência</p>
             </div>
             <div class="simulator-header-actions">
                 <button type="button" id="toggleDebugBtn" onclick="toggleDebugPanel()">Debug</button>
                 <button type="button" onclick="clearChat()">Limpar</button>
             </div>
         </header>
+
+        <div class="simulator-brain-bar">
+            <label for="brainPhoneInput">Telefone (Brain)</label>
+            <input
+                type="text"
+                id="brainPhoneInput"
+                maxlength="20"
+                placeholder="Ex.: 65993558186"
+                aria-label="Telefone para simular o Brain"
+            >
+            <span class="simulator-brain-hint">Opcional — com telefone, simula o Brain (usa <code>{telefone}</code> do curl) antes dos triggers</span>
+        </div>
 
         <div id="chatMessages" class="simulator-messages">
             <div class="simulator-empty" id="chatEmpty">
@@ -55,7 +67,7 @@
 
         <div class="simulator-debug" id="debugPanel" style="display:none;">
             <div class="simulator-debug-header">
-                <span>Avaliação dos triggers</span>
+                <span>Avaliação (Brain + triggers)</span>
                 <span id="debugTime"></span>
             </div>
             <div class="simulator-debug-body" id="debugBody">
@@ -78,6 +90,7 @@ const sendBtn = document.getElementById('sendBtn');
 const debugPanel = document.getElementById('debugPanel');
 const debugBody = document.getElementById('debugBody');
 const debugTime = document.getElementById('debugTime');
+const brainPhoneInput = document.getElementById('brainPhoneInput');
 
 function formatTime(date = new Date()) {
     return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -183,7 +196,11 @@ async function sendMessage(event) {
         const response = await fetch('/simulator/message', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: text, claimed_keys: claimedKeys }),
+            body: JSON.stringify({
+                message: text,
+                claimed_keys: claimedKeys,
+                phone: brainPhoneInput.value.trim() || null,
+            }),
         });
         const data = await response.json();
         if (!response.ok) {

@@ -86,6 +86,45 @@
     background: rgba(255, 255, 255, 0.2);
 }
 
+.simulator-brain-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 10px 16px;
+    background: #f0f2f5;
+    border-bottom: 1px solid #d1d7db;
+}
+
+.simulator-brain-bar label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #3b4a54;
+    white-space: nowrap;
+}
+
+.simulator-brain-bar input {
+    flex: 1;
+    min-width: 140px;
+    max-width: 220px;
+    padding: 8px 10px;
+    border: 1px solid #cfd4d9;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+.simulator-brain-hint {
+    flex: 1 1 100%;
+    font-size: 12px;
+    color: #667781;
+}
+
+@media (min-width: 640px) {
+    .simulator-brain-hint {
+        flex: 1 1 auto;
+    }
+}
+
 .simulator-messages {
     flex: 1;
     overflow-y: auto;

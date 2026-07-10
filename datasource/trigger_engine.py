@@ -10,6 +10,7 @@ from datasource import async_send_queue
 from datasource import Messages
 from datasource import AutoBoot
 from datasource import triggers as triggers_store
+from datasource import brain as brain_store
 from datasource.app_timezone import now_local
 from datasource.phone_utils import phone_digit_variants
 
@@ -177,6 +178,37 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
             candidates.append(trigger)
 
         if not candidates:
+            brain_enabled = bool(
+                brain_store.get_config(mgd) and brain_store.get_config(mgd).get("enabled")
+            )
+            if brain_enabled:
+                if messages_runner is None or nav is None:
+                    if _try_brain_enqueue(
+                        mgd,
+                        phone,
+                        contact_key,
+                        now,
+                        stats,
+                        dedup_key,
+                        chat_key,
+                        keep_unseen,
+                    ):
+                        continue
+                elif _validate_and_send_inline(
+                    messages_runner,
+                    nav,
+                    mgd,
+                    phone,
+                    message_text,
+                    contact_key,
+                    [],
+                    now,
+                    stats,
+                    dedup_key,
+                    chat_key,
+                    keep_unseen,
+                ):
+                    continue
             if unique_blocked_only and chat_key:
                 # Mantém elegível: soft-delete pode liberar o unique e o mesmo unread reaparece.
                 keep_unseen.add(chat_key)
@@ -189,6 +221,18 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
             continue
 
         if messages_runner is None or nav is None:
+            # Sem browser: Brain antes dos triggers (passo 15).
+            if _try_brain_enqueue(
+                mgd,
+                phone,
+                contact_key,
+                now,
+                stats,
+                dedup_key,
+                chat_key,
+                keep_unseen,
+            ):
+                continue
             # Sem browser: só enfileira no Rabbit (API/async legado).
             fired_for_chat = _enqueue_candidates(
                 mgd,
@@ -375,8 +419,28 @@ def _validate_and_send_inline(
         messages_runner._leave_conversation(nav, restore_unread=True)
         return False
 
+    # Brain antes dos triggers (passo 15): API dinâmica substitui resposta do trigger.
     bot = AutoBoot.WhatsAppBot(nav, mgd)
+    if _try_brain_inline(
+        mgd,
+        bot,
+        phone,
+        contact_key,
+        now,
+        stats,
+        dedup_key,
+        chat_key,
+        keep_unseen,
+    ):
+        messages_runner._leave_conversation(nav, restore_unread=False)
+        return True
+
     remaining = list(candidates)
+    if not remaining:
+        if chat_opened:
+            messages_runner._leave_conversation(nav, restore_unread=True)
+        return sent_any
+
     while remaining:
         trigger = remaining.pop(0)
         stats["matched"] += 1
@@ -607,3 +671,171 @@ def _recently_processed(key: str) -> bool:
 
 def _mark_processed(key: str) -> None:
     _DEDUP[key] = time.time()
+
+
+def _brain_enqueue_kwargs(config: dict, contact_key: str, now) -> dict:
+    unique_cfg = config.get("unique") or {}
+    kwargs: dict = {}
+    if unique_cfg.get("enabled"):
+        kwargs["brain_id"] = brain_store.BRAIN_CONFIG_ID
+        kwargs["contact_key"] = contact_key
+        kwargs["scope_key"] = triggers_store.unique_scope_key(
+            str(unique_cfg.get("scope") or "day"), now
+        )
+    return kwargs
+
+
+def _prepare_brain_message(
+    mgd,
+    phone: str,
+    contact_key: str,
+    now,
+    stats: dict,
+    chat_key: str,
+    keep_unseen: set[str],
+) -> Optional[tuple[str, dict]]:
+    config = brain_store.get_config(mgd)
+    if not config or not config.get("enabled"):
+        return None
+
+    unique_cfg = config.get("unique") or {}
+    if unique_cfg.get("enabled") and brain_store.has_execution_claim(
+        mgd, contact_key, unique_cfg, now
+    ):
+        logger.info("Brain já executado (unique) para %s", phone)
+        stats["skipped"] += 1
+        if chat_key:
+            keep_unseen.add(chat_key)
+        return None
+
+    message = brain_store.fetch_message_for_phone(mgd, phone, now)
+    if not message:
+        return None
+
+    if not brain_store.try_claim_execution(mgd, contact_key, unique_cfg, now):
+        logger.info("Brain já executado (unique) para %s", phone)
+        stats["skipped"] += 1
+        if chat_key:
+            keep_unseen.add(chat_key)
+        return None
+
+    return message, config
+
+
+def _try_brain_enqueue(
+    mgd,
+    phone: str,
+    contact_key: str,
+    now,
+    stats: dict,
+    dedup_key: str,
+    chat_key: str,
+    keep_unseen: set[str],
+) -> bool:
+    prepared = _prepare_brain_message(
+        mgd, phone, contact_key, now, stats, chat_key, keep_unseen
+    )
+    if not prepared:
+        return False
+
+    message, config = prepared
+    unique_cfg = config.get("unique") or {}
+    enqueue_kwargs = _brain_enqueue_kwargs(config, contact_key, now)
+    try:
+        job_id = async_send_queue.enqueue_job(
+            mgd,
+            phone,
+            message,
+            unic_sent=False,
+            unRead=True,
+            **enqueue_kwargs,
+        )
+        logger.info(
+            "Brain disparado para %s (job %s) resposta=%r",
+            phone,
+            job_id,
+            message[:80],
+        )
+        stats["queued"] += 1
+        _mark_processed(dedup_key)
+        return True
+    except Exception:
+        stats["errors"] += 1
+        brain_store.release_execution_claim_by_keys(
+            mgd,
+            contact_key,
+            enqueue_kwargs.get("scope_key", ""),
+        )
+        logger.exception("Brain: falha ao enfileirar resposta para %s", phone)
+        return False
+
+
+def _try_brain_inline(
+    mgd,
+    bot,
+    phone: str,
+    contact_key: str,
+    now,
+    stats: dict,
+    dedup_key: str,
+    chat_key: str,
+    keep_unseen: set[str],
+) -> bool:
+    prepared = _prepare_brain_message(
+        mgd, phone, contact_key, now, stats, chat_key, keep_unseen
+    )
+    if not prepared:
+        return False
+
+    message, config = prepared
+    unique_cfg = config.get("unique") or {}
+    enqueue_kwargs = _brain_enqueue_kwargs(config, contact_key, now)
+    job_id = None
+    try:
+        job_id = async_send_queue.create_inline_job(
+            mgd,
+            phone,
+            message,
+            unRead=True,
+            **enqueue_kwargs,
+        )
+        send_result = bot.syncSendText(
+            phone,
+            message,
+            unic_sent=False,
+            unRead=True,
+            skip_open=True,
+            return_home=True,
+        )
+        ok = send_result == "Enviado"
+        async_send_queue.finalize_job(mgd, job_id, ok, send_result)
+        if ok:
+            logger.info(
+                "Brain enviado inline para %s (job %s) resposta=%r",
+                phone,
+                job_id,
+                message[:80],
+            )
+            stats["queued"] += 1
+            _mark_processed(dedup_key)
+            return True
+
+        brain_store.release_execution_claim_by_keys(
+            mgd,
+            contact_key,
+            enqueue_kwargs.get("scope_key", ""),
+        )
+        stats["errors"] += 1
+        logger.warning("Brain falhou no envio inline (%s): %s", phone, send_result)
+        return False
+    except Exception:
+        stats["errors"] += 1
+        brain_store.release_execution_claim_by_keys(
+            mgd,
+            contact_key,
+            enqueue_kwargs.get("scope_key", ""),
+        )
+        if job_id:
+            async_send_queue.finalize_job(mgd, job_id, False, "erro no envio inline do brain")
+        logger.exception("Brain: falha no envio inline para %s", phone)
+        return False

@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+
+{% block title %}Brain — WhatsApp Bot API{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <div>
+            <h1>Brain</h1>
+            <p>Resposta dinâmica via API antes dos triggers</p>
+        </div>
+    </div>
+
+    {% if message %}
+    <div class="alert alert-success">{{ message }}</div>
+    {% endif %}
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    {% if config and config.response_field %}
+    <div class="brain-status-card">
+        <div class="brain-status-row">
+            <strong>Status:</strong>
+            <span class="badge {% if config.enabled %}badge-success{% else %}badge-muted{% endif %}">
+                {% if config.enabled %}Ativo{% else %}Inativo{% endif %}
+            </span>
+        </div>
+        <div class="brain-status-row"><strong>Campo:</strong> <code>{{ config.response_field }}</code></div>
+        <div class="brain-status-row"><strong>Horário:</strong> {{ config.schedule_summary }}</div>
+        <div class="brain-status-row"><strong>Único:</strong> {{ config.unique_summary }}</div>
+    </div>
+    {% endif %}
+
+    <form id="brainForm" class="trigger-form" method="post" action="/brain/save">
+        <div class="form-group">
+            <label for="curl">Comando curl</label>
+            <textarea id="curl" name="curl" rows="10" required placeholder="curl --location 'https://...' \&#10;--header 'Authorization: Bearer ...' \&#10;--data-urlencode 'celular={telefone}' \&#10;--data-urlencode 'com_situacao=True'">{{ form.curl }}</textarea>
+            <span class="hint">
+                Use <code>{telefone}</code> onde a API espera o número do contato.<br>
+                Ex.: <code>--data-urlencode 'celular={telefone}'</code> — em produção vira o telefone do chat.
+            </span>
+        </div>
+
+        <div class="form-group">
+            <label for="test_phone">Telefone para teste</label>
+            <input type="text" id="test_phone" maxlength="20" placeholder="Ex.: 41998500111" value="{{ form.test_phone or '' }}">
+            <span class="hint">Usado ao clicar em Avançar — substitui <code>{telefone}</code> no curl de teste.</span>
+        </div>
+
+        <div class="form-actions" id="testActions">
+            <button type="button" class="btn" id="btnAdvance" onclick="testBrainCurl()">Avançar</button>
+        </div>
+
+        <div id="testPanel" class="brain-test-panel" style="display:none;">
+            <div class="form-group">
+                <label>Resposta da API</label>
+                <pre id="testResult" class="brain-json-preview"></pre>
+            </div>
+
+            <div class="form-group">
+                <label>Selecione o campo da resposta</label>
+                <div id="fieldOptions" class="brain-field-list"></div>
+                <input type="hidden" id="response_field" name="response_field" value="{{ form.response_field }}">
+            </div>
+        </div>
+
+        <div id="configPanel" class="{% if not config or not config.response_field %}hidden{% endif %}">
+            <div class="form-group">
+                <label>Dias da semana</label>
+                <div class="days-grid">
+                    {% for day in day_options %}
+                    <label class="day-chip">
+                        <input type="checkbox" name="days_of_week" value="{{ day.value }}" {% if day.value in form.days_of_week %}checked{% endif %}>
+                        {{ day.label }}
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="checkbox-row">
+                    <input type="checkbox" id="all_day" name="all_day" value="1" {% if form.all_day %}checked{% endif %} onchange="toggleTimeFields()">
+                    Dia todo (sem janela de horário)
+                </label>
+            </div>
+
+            <div id="timeFields" class="form-group{% if form.all_day %} hidden{% endif %}">
+                <label>Janela de horário</label>
+                <div class="time-row">
+                    <div>
+                        <label for="time_start">Início</label>
+                        <input type="time" id="time_start" name="time_start" value="{{ form.time_start }}">
+                    </div>
+                    <div>
+                        <label for="time_end">Fim</label>
+                        <input type="time" id="time_end" name="time_end" value="{{ form.time_end }}">
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="checkbox-row">
+                    <input type="checkbox" id="unique_enabled" name="unique_enabled" value="1" {% if form.unique_enabled %}checked{% endif %} onchange="toggleUniqueScope()">
+                    Execução única (limitar repetições)
+                </label>
+            </div>
+
+            <div id="uniqueScopeField" class="form-group{% if not form.unique_enabled %} hidden{% endif %}">
+                <label for="unique_scope">Escopo da unicidade</label>
+                <select id="unique_scope" name="unique_scope">
+                    {% for scope in unique_scopes %}
+                    <option value="{{ scope.value }}" {% if form.unique_scope == scope.value %}selected{% endif %}>{{ scope.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="checkbox-row">
+                    <input type="checkbox" name="enabled" value="1" {% if form.enabled %}checked{% endif %}>
+                    Brain ativo
+                </label>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit">Salvar</button>
+            </div>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const savedField = {{ form.response_field | tojson }};
+const hasSavedConfig = {% if config and config.response_field %}true{% else %}false{% endif %};
+
+function toggleTimeFields() {
+    const allDay = document.getElementById('all_day').checked;
+    document.getElementById('timeFields').classList.toggle('hidden', allDay);
+}
+
+function toggleUniqueScope() {
+    const unique = document.getElementById('unique_enabled').checked;
+    document.getElementById('uniqueScopeField').classList.toggle('hidden', !unique);
+}
+
+function renderFieldOptions(paths, selectedPath) {
+    const container = document.getElementById('fieldOptions');
+    container.innerHTML = '';
+    if (!paths.length) {
+        container.innerHTML = '<p class="hint">Nenhum campo encontrado na resposta.</p>';
+        return;
+    }
+    paths.forEach((item) => {
+        const label = document.createElement('label');
+        label.className = 'brain-field-option';
+        const input = document.createElement('input');
+        input.type = 'radio';
+        input.name = 'field_pick';
+        input.value = item.path;
+        if (item.path === selectedPath) {
+            input.checked = true;
+        }
+        input.addEventListener('change', () => {
+            document.getElementById('response_field').value = item.path;
+            document.getElementById('configPanel').classList.remove('hidden');
+        });
+        const code = document.createElement('code');
+        code.textContent = item.path;
+        const preview = document.createElement('span');
+        preview.className = 'hint';
+        preview.textContent = item.preview || '';
+        label.appendChild(input);
+        label.appendChild(code);
+        label.appendChild(preview);
+        container.appendChild(label);
+    });
+}
+
+function testBrainCurl() {
+    const curl = document.getElementById('curl').value.trim();
+    const resultEl = document.getElementById('testResult');
+    const panel = document.getElementById('testPanel');
+    if (!curl) {
+        alert('Informe o comando curl.');
+        return;
+    }
+    resultEl.textContent = 'Executando...';
+    panel.style.display = 'block';
+
+    fetch('/brain/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            curl,
+            test_phone: document.getElementById('test_phone').value.trim() || null,
+        }),
+    })
+        .then(async (response) => {
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.detail || JSON.stringify(data));
+            }
+            resultEl.textContent = JSON.stringify(data.data, null, 2);
+            const selected = document.getElementById('response_field').value || savedField || '';
+            renderFieldOptions(data.paths || [], selected);
+            if (selected) {
+                document.getElementById('configPanel').classList.remove('hidden');
+            }
+        })
+        .catch((err) => {
+            resultEl.textContent = 'Erro: ' + err.message;
+            document.getElementById('fieldOptions').innerHTML = '';
+        });
+}
+
+if (hasSavedConfig) {
+    document.getElementById('configPanel').classList.remove('hidden');
+}
+</script>
+{% endblock %}

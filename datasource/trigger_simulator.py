@@ -1,18 +1,24 @@
-"""Simulação de triggers em memória (sem persistência)."""
+"""Simulação de triggers e Brain em memória (unique simulado, sem gravar execuções)."""
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
+from datasource import brain as brain_store
 from datasource import triggers as triggers_store
 from datasource.app_timezone import now_local
 
-
 SIMULATOR_CONTACT_KEY = "simulator"
+BRAIN_SIMULATOR_ID = "brain"
+BRAIN_SIMULATOR_NAME = "Brain"
 
 
 def _claim_key(trigger_id: str, scope_key: str) -> str:
     return f"{trigger_id}|{scope_key}"
+
+
+def _brain_claim_key(scope_key: str) -> str:
+    return f"brain|{scope_key}"
 
 
 def _has_claim(claimed_keys: set[str], trigger_id: str, unique: dict, now: datetime) -> bool:
@@ -22,23 +28,20 @@ def _has_claim(claimed_keys: set[str], trigger_id: str, unique: dict, now: datet
     return _claim_key(trigger_id, scope_key) in claimed_keys
 
 
-def evaluate_message(
-    message: str,
-    active_triggers: list[dict],
-    claimed_keys: set[str],
-    now: datetime | None = None,
-) -> dict[str, Any]:
-    """
-    Avalia uma mensagem contra triggers ativos sem gravar no MongoDB.
-    Retorna respostas do bot, eventos de debug e chaves de unique simuladas.
-    """
-    text = (message or "").strip()
-    if not text:
-        return {"replies": [], "events": [], "claimed_keys": sorted(claimed_keys)}
+def _has_brain_claim(claimed_keys: set[str], unique: dict, now: datetime) -> bool:
+    if not unique.get("enabled"):
+        return False
+    scope_key = triggers_store.unique_scope_key(str(unique.get("scope") or "day"), now)
+    return _brain_claim_key(scope_key) in claimed_keys
 
-    now = now or now_local()
-    claimed = set(claimed_keys)
-    replies: list[dict[str, str]] = []
+
+def _evaluate_trigger_candidates(
+    text: str,
+    active_triggers: list[dict],
+    claimed: set[str],
+    now: datetime,
+) -> tuple[list[dict], list[dict[str, str]]]:
+    candidates: list[dict] = []
     events: list[dict[str, str]] = []
 
     for trigger in active_triggers:
@@ -91,6 +94,163 @@ def evaluate_message(
                 }
             )
             continue
+
+        candidates.append(trigger)
+
+    return candidates, events
+
+
+def _try_brain_simulation(
+    mgd,
+    phone: str,
+    claimed: set[str],
+    now: datetime,
+) -> tuple[Optional[str], list[dict[str, str]]]:
+    """
+    Tenta obter resposta do Brain (chama API real com o telefone informado).
+    Retorna (mensagem ou None, eventos de debug).
+    """
+    config = brain_store.get_config(mgd)
+    events: list[dict[str, str]] = []
+
+    if not config:
+        return None, events
+
+    if not config.get("enabled"):
+        events.append(
+            {
+                "trigger_id": BRAIN_SIMULATOR_ID,
+                "trigger_name": BRAIN_SIMULATOR_NAME,
+                "status": "skipped",
+                "reason": "brain inativo",
+            }
+        )
+        return None, events
+
+    schedule = config.get("schedule") or {}
+    if not triggers_store.is_within_schedule(schedule, now):
+        events.append(
+            {
+                "trigger_id": BRAIN_SIMULATOR_ID,
+                "trigger_name": BRAIN_SIMULATOR_NAME,
+                "status": "skipped",
+                "reason": "fora do horário",
+            }
+        )
+        return None, events
+
+    unique_cfg = config.get("unique") or {}
+    if _has_brain_claim(claimed, unique_cfg, now):
+        events.append(
+            {
+                "trigger_id": BRAIN_SIMULATOR_ID,
+                "trigger_name": BRAIN_SIMULATOR_NAME,
+                "status": "skipped",
+                "reason": "unique já executado nesta simulação",
+            }
+        )
+        return None, events
+
+    phone_digits = "".join(filter(str.isdigit, str(phone or "")))
+    if not phone_digits:
+        events.append(
+            {
+                "trigger_id": BRAIN_SIMULATOR_ID,
+                "trigger_name": BRAIN_SIMULATOR_NAME,
+                "status": "skipped",
+                "reason": "telefone inválido",
+            }
+        )
+        return None, events
+
+    message = brain_store.fetch_message_for_phone(mgd, phone_digits, now)
+    if not message:
+        field = config.get("response_field") or ""
+        events.append(
+            {
+                "trigger_id": BRAIN_SIMULATOR_ID,
+                "trigger_name": BRAIN_SIMULATOR_NAME,
+                "status": "skipped",
+                "reason": f"campo {field!r} vazio ou API sem resposta",
+            }
+        )
+        return None, events
+
+    if unique_cfg.get("enabled"):
+        scope_key = triggers_store.unique_scope_key(
+            str(unique_cfg.get("scope") or "day"), now
+        )
+        claimed.add(_brain_claim_key(scope_key))
+
+    events.append(
+        {
+            "trigger_id": BRAIN_SIMULATOR_ID,
+            "trigger_name": BRAIN_SIMULATOR_NAME,
+            "status": "fired",
+            "reason": f"resposta via API ({config.get('response_field')})",
+        }
+    )
+    return message, events
+
+
+def evaluate_message(
+    message: str,
+    active_triggers: list[dict],
+    claimed_keys: set[str],
+    now: datetime | None = None,
+    mgd=None,
+    phone: str | None = None,
+) -> dict[str, Any]:
+    """
+    Avalia uma mensagem contra triggers ativos (e Brain, se telefone informado).
+    Unique fica só em memória — não grava execuções no MongoDB.
+    """
+    text = (message or "").strip()
+    if not text:
+        return {"replies": [], "events": [], "claimed_keys": sorted(claimed_keys)}
+
+    now = now or now_local()
+    claimed = set(claimed_keys)
+    replies: list[dict[str, str]] = []
+    events: list[dict[str, str]] = []
+
+    phone_value = str(phone or "").strip()
+    if phone_value and mgd is not None:
+        brain_message, brain_events = _try_brain_simulation(
+            mgd, phone_value, claimed, now
+        )
+        events.extend(brain_events)
+        if brain_message:
+            replies.append(
+                {
+                    "text": brain_message,
+                    "trigger_id": BRAIN_SIMULATOR_ID,
+                    "trigger_name": BRAIN_SIMULATOR_NAME,
+                }
+            )
+            return {
+                "replies": replies,
+                "events": events,
+                "claimed_keys": sorted(claimed),
+            }
+
+    candidates, candidate_events = _evaluate_trigger_candidates(
+        text, active_triggers, claimed, now
+    )
+    events.extend(candidate_events)
+
+    if not candidates:
+        return {
+            "replies": replies,
+            "events": events,
+            "claimed_keys": sorted(claimed),
+        }
+
+    for trigger in candidates:
+        trigger_id = str(trigger.get("id") or "")
+        trigger_name = str(trigger.get("name") or trigger_id or "Trigger")
+        unique_cfg = trigger.get("unique") or {}
+        reply_messages = triggers_store.get_reply_messages(trigger)
 
         if unique_cfg.get("enabled"):
             scope_key = triggers_store.unique_scope_key(
