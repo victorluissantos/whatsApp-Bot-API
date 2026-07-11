@@ -12,13 +12,14 @@ import requests
 from datasource import curl_parser
 from datasource import triggers as triggers_store
 from datasource.app_timezone import now_local
+from datasource.phone_utils import phone_digit_variants
 
 logger = logging.getLogger(__name__)
 
 BRAIN_CONFIG_ID = "default"
 BRAIN_COLLECTION = "wa_brain_config"
 BRAIN_EXECUTIONS_COLLECTION = "wa_brain_executions"
-REQUEST_TIMEOUT_SECONDS = 30
+REQUEST_TIMEOUT_SECONDS = 60
 
 
 def _config_coll(mgd) -> Any:
@@ -123,36 +124,134 @@ def test_curl(curl_text: str, test_phone: Optional[str] = None) -> dict:
 
 def fetch_message_for_phone(mgd, phone: str, now: Optional[datetime] = None) -> Optional[str]:
     """Executa o curl do Brain com o telefone e retorna o texto do campo configurado."""
+    message, _reason = resolve_message_for_phone(mgd, phone, now=now)
+    return message
+
+
+def _ordered_phone_variants(phone: str) -> list[str]:
+    """Variantes BR ordenadas: prefere celular com 9º dígito (11 dígitos locais)."""
+    digits = re.sub(r"\D", "", str(phone or ""))
+    variants = phone_digit_variants(digits) or ({digits} if digits else set())
+    if not variants:
+        return []
+
+    def _sort_key(v: str) -> tuple:
+        local = v[2:] if v.startswith("55") else v
+        has_ninth = len(local) == 11 and len(local) > 2 and local[2] == "9"
+        return (0 if has_ninth else 1, 0 if not v.startswith("55") else 1, -len(local))
+
+    return sorted(variants, key=_sort_key)
+
+
+def resolve_message_for_phone(
+    mgd,
+    phone: str,
+    now: Optional[datetime] = None,
+    contact_key: Optional[str] = None,
+) -> tuple[Optional[str], str]:
+    """
+    Executa o curl e retorna (mensagem, motivo).
+    motivo vazio = sucesso; outros valores explicam skip/falha.
+    Tenta variantes do telefone (com/sem 55 e 9º dígito) quando a API falha.
+    """
     config = get_config(mgd)
     if not config or not config.get("enabled"):
-        return None
+        return None, "inativo"
 
     now = now or now_local()
     schedule = config.get("schedule") or {}
     if not triggers_store.is_within_schedule(schedule, now):
-        logger.debug("Brain fora do horário")
-        return None
+        logger.info("Brain fora do horário")
+        return None, "fora_do_horario"
 
-    request = dict(config.get("request") or {})
-    if not request.get("url"):
-        try:
-            request = curl_parser.parse_curl(config.get("curl") or "")
-        except curl_parser.CurlParseError:
-            logger.warning("Brain com curl inválido")
-            return None
-
-    request = curl_parser.substitute_phone(request, phone)
     try:
-        response_data = _execute_request(request)
-    except Exception as e:
-        logger.warning("Brain: falha na requisição para %s: %s", phone, e)
-        return None
+        base_request = curl_parser.parse_curl(str(config.get("curl") or ""))
+    except curl_parser.CurlParseError as e:
+        logger.warning("Brain com curl inválido: %s", e)
+        return None, "curl_invalido"
 
-    message = extract_json_path(response_data, config.get("response_field") or "")
-    if not message:
-        logger.debug("Brain: campo %r vazio para %s", config.get("response_field"), phone)
-        return None
-    return message
+    field = config.get("response_field") or ""
+    variants = _ordered_phone_variants(phone)
+    if not variants:
+        return None, "telefone_invalido"
+
+    last_reason = "campo_vazio"
+    for variant in variants:
+        request = curl_parser.substitute_phone(base_request, variant)
+        celular = (request.get("data") or {}).get("celular") or (
+            request.get("data") or {}
+        ).get("telefone")
+        logger.info(
+            "Brain: consultando API para %s (variante=%s param=%s)",
+            phone,
+            variant,
+            celular,
+        )
+        try:
+            response_data = _execute_request(request)
+        except Exception as e:
+            logger.warning(
+                "Brain: falha na requisição para %s (variante=%s): %s",
+                phone,
+                variant,
+                e,
+            )
+            last_reason = "api_erro"
+            continue
+
+        message = extract_json_path(response_data, field)
+        if message:
+            if variant != re.sub(r"\D", "", str(phone or "")):
+                logger.info(
+                    "Brain: API respondeu com variante %s (original %s)",
+                    variant,
+                    phone,
+                )
+            return message, ""
+
+        if isinstance(response_data, dict):
+            status = response_data.get("status")
+            if status in (False, "false", "0", 0):
+                logger.info(
+                    "Brain: API retornou status=false para %s (variante=%s)",
+                    phone,
+                    variant,
+                )
+                last_reason = "api_status_false"
+                continue
+
+        logger.info(
+            "Brain: campo %r vazio para %s variante=%s (resposta=%s)",
+            field,
+            phone,
+            variant,
+            str(response_data)[:200],
+        )
+        last_reason = "campo_vazio"
+
+    return None, last_reason
+
+
+def is_enabled(mgd) -> bool:
+    config = get_config(mgd)
+    return bool(config and config.get("enabled"))
+
+
+def should_allow_triggers(mgd, contact_key: str, now: Optional[datetime] = None) -> bool:
+    """
+    Triggers só podem disparar depois que o Brain já executou no escopo unique.
+    Se unique desligado, triggers sempre permitidos após tentativa de brain.
+    """
+    config = get_config(mgd)
+    if not config or not config.get("enabled"):
+        return True
+
+    unique_cfg = config.get("unique") or {}
+    if not unique_cfg.get("enabled"):
+        return True
+
+    now = now or now_local()
+    return has_execution_claim(mgd, contact_key, unique_cfg, now)
 
 
 def is_active_for_contact(
@@ -184,11 +283,14 @@ def has_execution_claim(
     if not unique.get("enabled"):
         return False
     scope_key = triggers_store.unique_scope_key(str(unique.get("scope") or "day"), now)
+    from datasource.phone_utils import phone_digit_variants
+
+    keys = list(phone_digit_variants(contact_key) or {contact_key})
     return (
         _exec_coll(mgd).find_one(
             {
                 "brain_id": BRAIN_CONFIG_ID,
-                "contact_key": contact_key,
+                "contact_key": {"$in": keys},
                 "scope_key": scope_key,
             },
             {"_id": 1},

@@ -51,3 +51,44 @@ def clear_cache() -> None:
         _fingerprint = ""
         _cached_chats = []
         _updated_at = 0.0
+
+
+def chats_have_unread(chats: list[dict]) -> bool:
+    return any(
+        str(c.get("unreadCount") or "0").strip() not in ("", "0")
+        for c in (chats or [])
+    )
+
+
+def _chat_merge_key(chat: dict) -> str:
+    phone = str(chat.get("phone") or "").strip()
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if digits:
+        if not digits.startswith("55") and len(digits) >= 10:
+            digits = "55" + digits
+        return f"phone:{digits}"
+    name = str(chat.get("name") or "").strip()
+    if name:
+        return f"name:{name}"
+    return ""
+
+
+def merge_chats_for_processing(raw: list[dict], cached: list[dict]) -> list[dict]:
+    """Mescla leitura atual do DOM com cache (preserva unread se o DOM falhar no contador)."""
+    by_key: dict[str, dict] = {}
+    for chat in cached or []:
+        key = _chat_merge_key(chat)
+        if key:
+            by_key[key] = dict(chat)
+    for chat in raw or []:
+        key = _chat_merge_key(chat)
+        if not key:
+            continue
+        merged = dict(by_key.get(key) or {})
+        prev_unread = str(merged.get("unreadCount") or "0").strip()
+        merged.update(chat)
+        raw_unread = str(chat.get("unreadCount") or "0").strip()
+        if raw_unread in ("", "0") and prev_unread not in ("", "0"):
+            merged["unreadCount"] = prev_unread
+        by_key[key] = merged
+    return list(by_key.values())

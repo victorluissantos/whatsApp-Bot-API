@@ -98,7 +98,7 @@ selenium_thread = None
 WINDOW_SHOW_DEBUG = True # set to True for debug visual via VNC
 
 # Um único envio por vez (síncrono ou worker da fila) para não concorrer no Selenium
-whatsapp_send_lock = threading.Lock()
+from datasource.whatsapp_lock import send_lock as whatsapp_send_lock
 _queue_worker_stop = threading.Event()
 # Transição para sessão logada: aciona clique no filtro "Não lidas" / "Unread".
 _prev_logged_in_for_unread_filter = False
@@ -643,8 +643,7 @@ def _run_unread_filter_watcher():
 def _run_unread_pane_cache_watcher():
     """
     A cada UNREAD_PANE_POLL_SECONDS (default 5), lê #pane-side se a sessão estiver logada.
-    Só adquire whatsapp_send_lock quando livre (nunca compete com envio). Se o snapshot mudar,
-    atualiza o cache e chama o webhook de não lidas, se configurado.
+    O lock do WhatsApp fica só nas operações de abrir/enviar (trigger_engine), não neste poll.
     """
     whats = Whats.Run()
     chats_runner = Chats.Run()
@@ -674,17 +673,15 @@ def _run_unread_pane_cache_watcher():
             trigger_engine.reset_baseline()
             time.sleep(interval)
             continue
-        if not whatsapp_send_lock.acquire(blocking=False):
-            time.sleep(interval)
-            continue
         try:
             old_chats, _ = unread_pane_cache.get_snapshot()
             raw = chats_runner.getUnreadChatsFromPaneSide(nav, limit=max_chats)
             if not isinstance(raw, list):
-                time.sleep(interval)
-                continue
-            fp = unread_pane_cache.fingerprint_for_chats(raw)
-            pane_changed = unread_pane_cache.update_if_changed(raw, fp)
+                raw = []
+            merged = unread_pane_cache.merge_chats_for_processing(raw, old_chats)
+            chats_for_cache = merged if merged else raw
+            fp = unread_pane_cache.fingerprint_for_chats(chats_for_cache)
+            pane_changed = unread_pane_cache.update_if_changed(chats_for_cache, fp)
             # Soft-delete/unique liberado: reavalia mesmo com pane estável.
             force_triggers = trigger_engine.consume_force_recalc()
             if pane_changed:
@@ -697,36 +694,30 @@ def _run_unread_pane_cache_watcher():
                             "timestamp": time.strftime(
                                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
                             ),
-                            "chats": raw,
-                            "total": len(raw),
+                            "chats": chats_for_cache,
+                            "total": len(chats_for_cache),
                         },
                     )
-            # Sempre avalia triggers quando há unread (ou force). Unique/dedup
-            # impedem reenvio; antes o motor só rodava se o fingerprint mudasse,
-            # então soft-delete + mensagem parada nunca re-disparava.
-            has_unread = any(
-                str(c.get("unreadCount") or "0").strip() not in ("", "0")
-                for c in raw
-            )
+            # Sempre avalia quando há unread no DOM mesclado com cache (ou force).
+            has_unread = unread_pane_cache.chats_have_unread(merged)
+            chats_for_engine = merged if merged else raw
             if pane_changed or force_triggers or has_unread:
                 try:
                     stats = trigger_engine.process_unread_changes(
-                        mgd, old_chats, raw, nav=nav
+                        mgd, old_chats, chats_for_engine, nav=nav
                     )
-                    if stats.get("queued") or force_triggers:
-                        logging.info(
-                            "Triggers: %s (pane_changed=%s force=%s unread=%s)",
-                            stats,
-                            pane_changed,
-                            force_triggers,
-                            has_unread,
-                        )
+                    logging.info(
+                        "Triggers: %s (pane_changed=%s force=%s unread=%s chats=%s)",
+                        stats,
+                        pane_changed,
+                        force_triggers,
+                        has_unread,
+                        len(chats_for_engine),
+                    )
                 except Exception:
                     logging.exception("Erro no motor de triggers")
         except Exception:
             logging.exception("Erro no watcher de cache #pane-side (não lidas)")
-        finally:
-            whatsapp_send_lock.release()
         time.sleep(interval)
 
 
@@ -929,6 +920,56 @@ async def brain_test_curl(body: BrainTestRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erro ao executar curl: {e}") from e
     return BrainTestResponse(**result)
+
+
+@app.post("/brain/process-now", tags=["Brain"])
+async def brain_process_now():
+    """
+    Força um ciclo do motor (unread + brain/triggers) com o navegador atual.
+    Útil para diagnóstico quando o watcher não disparou.
+    """
+    navegador_local = obter_navegador()
+    whats = Whats.Run()
+    if not whats.isLogado(navegador_local):
+        raise HTTPException(status_code=400, detail="WhatsApp não está conectado")
+    old_chats, _ = unread_pane_cache.get_snapshot()
+    raw = Chats.Run().getUnreadChatsFromPaneSide(navegador_local, limit=100)
+    if not isinstance(raw, list):
+        raw = []
+    merged = unread_pane_cache.merge_chats_for_processing(raw, old_chats)
+    chats_for_engine = merged if merged else raw
+    try:
+        stats = trigger_engine.process_unread_changes(
+            mgd, old_chats, chats_for_engine, nav=navegador_local
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return {
+        "success": True,
+        "stats": stats,
+        "chats_in_engine": len(chats_for_engine),
+        "has_unread": unread_pane_cache.chats_have_unread(chats_for_engine),
+        "to_evaluate": len(trigger_engine.chats_to_evaluate(chats_for_engine)),
+    }
+
+
+@app.get("/brain/diagnose", tags=["Brain"])
+async def brain_diagnose(phone: str = Query(..., min_length=10, max_length=20)):
+    """Testa o Brain com um telefone e retorna motivo se falhar (sem expor token)."""
+    config = brain_store.get_config(mgd)
+    if not config:
+        return {"ok": False, "reason": "brain_nao_configurado"}
+    contact_key = triggers_store.contact_key(phone, None)
+    allow_triggers = brain_store.should_allow_triggers(mgd, contact_key, now_local())
+    message, reason = brain_store.resolve_message_for_phone(mgd, phone)
+    return {
+        "ok": bool(message),
+        "enabled": bool(config.get("enabled")),
+        "response_field": config.get("response_field"),
+        "allow_triggers": allow_triggers,
+        "reason": reason or ("ok" if message else "campo_vazio"),
+        "preview": (message or "")[:200],
+    }
 
 
 @app.post("/brain/save", response_class=HTMLResponse, include_in_schema=False)

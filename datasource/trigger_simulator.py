@@ -163,7 +163,7 @@ def _try_brain_simulation(
         )
         return None, events
 
-    message = brain_store.fetch_message_for_phone(mgd, phone_digits, now)
+    message = brain_store.resolve_message_for_phone(mgd, phone_digits, now)[0]
     if not message:
         field = config.get("response_field") or ""
         events.append(
@@ -215,7 +215,15 @@ def evaluate_message(
     events: list[dict[str, str]] = []
 
     phone_value = str(phone or "").strip()
-    if phone_value and mgd is not None:
+    brain_config = brain_store.get_config(mgd) if mgd is not None else None
+    brain_active = bool(brain_config and brain_config.get("enabled"))
+    allow_triggers = True
+    if brain_active and brain_config:
+        unique_cfg = brain_config.get("unique") or {}
+        if unique_cfg.get("enabled"):
+            allow_triggers = _has_brain_claim(claimed, unique_cfg, now)
+
+    if phone_value and mgd is not None and brain_active and not allow_triggers:
         brain_message, brain_events = _try_brain_simulation(
             mgd, phone_value, claimed, now
         )
@@ -233,6 +241,19 @@ def evaluate_message(
                 "events": events,
                 "claimed_keys": sorted(claimed),
             }
+        events.append(
+            {
+                "trigger_id": BRAIN_SIMULATOR_ID,
+                "trigger_name": BRAIN_SIMULATOR_NAME,
+                "status": "skipped",
+                "reason": "1ª resposta do dia — triggers suprimidos (brain sem resposta)",
+            }
+        )
+        return {
+            "replies": replies,
+            "events": events,
+            "claimed_keys": sorted(claimed),
+        }
 
     candidates, candidate_events = _evaluate_trigger_candidates(
         text, active_triggers, claimed, now
