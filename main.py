@@ -207,7 +207,9 @@ class TriggerUniqueModel(BaseModel):
 
 class TriggerCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
-    pattern: str = Field(..., min_length=1, max_length=500)
+    pattern_received: str = Field("", max_length=500)
+    pattern_sent: str = Field("", max_length=500)
+    pattern: Optional[str] = Field(None, max_length=500, description="Legado: alias de pattern_received")
     case_sensitive: bool = False
     reply_messages: list[str] = Field(default_factory=list, max_length=triggers_store.MAX_REPLY_MESSAGES)
     reply_message: Optional[str] = Field(None, max_length=triggers_store.MAX_REPLY_MESSAGE_LENGTH)
@@ -216,7 +218,14 @@ class TriggerCreateRequest(BaseModel):
     unique: TriggerUniqueModel = Field(default_factory=TriggerUniqueModel)
 
     @model_validator(mode="after")
-    def normalize_reply_messages(self):
+    def normalize_patterns_and_replies(self):
+        patterns = triggers_store.normalize_trigger_patterns(self.model_dump())
+        triggers_store.validate_trigger_patterns(
+            patterns["pattern_received"], patterns["pattern_sent"]
+        )
+        object.__setattr__(self, "pattern_received", patterns["pattern_received"])
+        object.__setattr__(self, "pattern_sent", patterns["pattern_sent"])
+        object.__setattr__(self, "pattern", patterns["pattern_received"])
         messages = triggers_store.normalize_reply_messages(self.reply_messages)
         if not messages and self.reply_message:
             messages = triggers_store.normalize_reply_messages([self.reply_message])
@@ -228,7 +237,9 @@ class TriggerCreateRequest(BaseModel):
 
 class TriggerUpdateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
-    pattern: str = Field(..., min_length=1, max_length=500)
+    pattern_received: str = Field("", max_length=500)
+    pattern_sent: str = Field("", max_length=500)
+    pattern: Optional[str] = Field(None, max_length=500, description="Legado: alias de pattern_received")
     case_sensitive: bool = False
     reply_messages: list[str] = Field(default_factory=list, max_length=triggers_store.MAX_REPLY_MESSAGES)
     reply_message: Optional[str] = Field(None, max_length=triggers_store.MAX_REPLY_MESSAGE_LENGTH)
@@ -237,7 +248,14 @@ class TriggerUpdateRequest(BaseModel):
     unique: TriggerUniqueModel = Field(default_factory=TriggerUniqueModel)
 
     @model_validator(mode="after")
-    def normalize_reply_messages(self):
+    def normalize_patterns_and_replies(self):
+        patterns = triggers_store.normalize_trigger_patterns(self.model_dump())
+        triggers_store.validate_trigger_patterns(
+            patterns["pattern_received"], patterns["pattern_sent"]
+        )
+        object.__setattr__(self, "pattern_received", patterns["pattern_received"])
+        object.__setattr__(self, "pattern_sent", patterns["pattern_sent"])
+        object.__setattr__(self, "pattern", patterns["pattern_received"])
         messages = triggers_store.normalize_reply_messages(self.reply_messages)
         if not messages and self.reply_message:
             messages = triggers_store.normalize_reply_messages([self.reply_message])
@@ -250,6 +268,8 @@ class TriggerUpdateRequest(BaseModel):
 class TriggerResponse(BaseModel):
     id: str
     name: str
+    pattern_received: str
+    pattern_sent: str
     pattern: str
     case_sensitive: bool
     reply_messages: list[str]
@@ -273,18 +293,30 @@ class TriggerEnabledRequest(BaseModel):
 
 class TriggerTestMatchRequest(BaseModel):
     pattern: str = Field(..., max_length=500, description="Expressão: LIKE %, AND, OR, IN(a,b,c)")
-    message: str = Field(..., max_length=2000, description="Texto da mensagem recebida para testar")
+    message: str = Field(..., max_length=2000, description="Texto da mensagem para testar")
     case_sensitive: bool = False
+    side: str = Field(
+        "received",
+        description="Lado do histórico: received (recebida) ou sent (enviada)",
+    )
 
 
 class TriggerTestMatchResponse(BaseModel):
     matches: bool
     pattern: str
     message: str
+    side: str
+
+
+class SimulatorHistoryItem(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000)
+    origem: str = Field("recebida", description="recebida ou enviada")
+    data: str = Field("", max_length=80)
 
 
 class SimulatorMessageRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
+    history: list[SimulatorHistoryItem] = Field(default_factory=list)
     claimed_keys: list[str] = Field(default_factory=list)
     phone: Optional[str] = Field(
         None,
@@ -357,6 +389,8 @@ def _trigger_to_response(doc: dict) -> TriggerResponse:
 def _payload_from_trigger_body(body: TriggerCreateRequest | TriggerUpdateRequest) -> dict:
     return {
         "name": body.name,
+        "pattern_received": body.pattern_received,
+        "pattern_sent": body.pattern_sent,
         "pattern": body.pattern,
         "case_sensitive": body.case_sensitive,
         "reply_messages": body.reply_messages,
@@ -368,7 +402,8 @@ def _payload_from_trigger_body(body: TriggerCreateRequest | TriggerUpdateRequest
 
 def _form_to_trigger_payload(
     name: str,
-    pattern: str,
+    pattern_received: str,
+    pattern_sent: str,
     reply_messages: list[str],
     case_sensitive: Optional[str],
     days_of_week: list[str],
@@ -380,9 +415,16 @@ def _form_to_trigger_payload(
     enabled: Optional[str],
 ) -> dict:
     days = [int(d) for d in days_of_week if str(d).isdigit()]
+    patterns = triggers_store.normalize_trigger_patterns(
+        {"pattern_received": pattern_received, "pattern_sent": pattern_sent}
+    )
+    triggers_store.validate_trigger_patterns(
+        patterns["pattern_received"], patterns["pattern_sent"]
+    )
     return {
         "name": name,
-        "pattern": pattern,
+        "pattern_received": patterns["pattern_received"],
+        "pattern_sent": patterns["pattern_sent"],
         "case_sensitive": case_sensitive is not None,
         "reply_messages": triggers_store.validate_reply_messages(reply_messages),
         "enabled": enabled is not None,
@@ -403,6 +445,8 @@ def _form_to_trigger_payload(
 def _default_trigger_form() -> dict:
     return {
         "name": "",
+        "pattern_received": "",
+        "pattern_sent": "",
         "pattern": "",
         "case_sensitive": False,
         "reply_messages": [""],
@@ -420,9 +464,12 @@ def _trigger_doc_to_form(doc: dict) -> dict:
     schedule = doc.get("schedule") or {}
     unique = doc.get("unique") or {}
     reply_messages = triggers_store.get_reply_messages(doc) or [""]
+    pattern_received, pattern_sent = triggers_store.get_trigger_patterns(doc)
     return {
         "name": doc.get("name", ""),
-        "pattern": doc.get("pattern", ""),
+        "pattern_received": pattern_received,
+        "pattern_sent": pattern_sent,
+        "pattern": pattern_received,
         "case_sensitive": bool(doc.get("case_sensitive")),
         "reply_messages": reply_messages,
         "days_of_week": schedule.get("days_of_week") or [0, 1, 2, 3, 4, 5, 6],
@@ -437,7 +484,8 @@ def _trigger_doc_to_form(doc: dict) -> dict:
 
 def _form_from_submission(
     name: str,
-    pattern: str,
+    pattern_received: str,
+    pattern_sent: str,
     reply_messages: list[str],
     case_sensitive: Optional[str],
     days_of_week: list[str],
@@ -448,9 +496,14 @@ def _form_from_submission(
     unique_scope: str,
     enabled: Optional[str],
 ) -> dict:
+    patterns = triggers_store.normalize_trigger_patterns(
+        {"pattern_received": pattern_received, "pattern_sent": pattern_sent}
+    )
     return {
         "name": name,
-        "pattern": pattern,
+        "pattern_received": patterns["pattern_received"],
+        "pattern_sent": patterns["pattern_sent"],
+        "pattern": patterns["pattern_received"],
         "case_sensitive": case_sensitive is not None,
         "reply_messages": triggers_store.normalize_reply_messages(reply_messages) or [""],
         "days_of_week": [int(d) for d in days_of_week if str(d).isdigit()],
@@ -1070,6 +1123,7 @@ async def simulator_evaluate_message(body: SimulatorMessageRequest):
         now=now,
         mgd=mgd,
         phone=body.phone,
+        history=[item.model_dump() for item in body.history],
     )
     return SimulatorMessageResponse(
         replies=result["replies"],
@@ -1121,7 +1175,8 @@ async def triggers_new_page(request: Request):
 async def triggers_create_submit(
     request: Request,
     name: str = Form(...),
-    pattern: str = Form(...),
+    pattern_received: str = Form(""),
+    pattern_sent: str = Form(""),
     reply_messages: Annotated[list[str], Form()] = [],
     case_sensitive: Optional[str] = Form(None),
     days_of_week: Annotated[list[str], Form()] = [],
@@ -1133,7 +1188,7 @@ async def triggers_create_submit(
     enabled: Optional[str] = Form(None),
 ):
     form_data = _form_to_trigger_payload(
-        name, pattern, reply_messages, case_sensitive, days_of_week,
+        name, pattern_received, pattern_sent, reply_messages, case_sensitive, days_of_week,
         all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
     )
     try:
@@ -1158,7 +1213,7 @@ async def triggers_create_submit(
             "is_edit": False,
             "trigger": None,
             "form": _form_from_submission(
-                name, pattern, reply_messages, case_sensitive, days_of_week,
+                name, pattern_received, pattern_sent, reply_messages, case_sensitive, days_of_week,
                 all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
             ),
             "day_options": TRIGGER_DAY_OPTIONS,
@@ -1214,6 +1269,9 @@ async def triggers_import_upload(
 
 @app.post("/triggers/test-match", tags=["Triggers"], response_model=TriggerTestMatchResponse)
 async def api_test_trigger_match(body: TriggerTestMatchRequest):
+    side = (body.side or "received").strip().lower()
+    if side not in ("received", "sent"):
+        raise HTTPException(status_code=400, detail="side deve ser 'received' ou 'sent'")
     try:
         matches = trigger_matcher.matches_pattern(body.message, body.pattern, body.case_sensitive)
     except trigger_matcher.PatternSyntaxError as e:
@@ -1222,6 +1280,7 @@ async def api_test_trigger_match(body: TriggerTestMatchRequest):
         matches=matches,
         pattern=body.pattern,
         message=body.message,
+        side=side,
     )
 
 
@@ -1250,7 +1309,8 @@ async def triggers_edit_submit(
     request: Request,
     trigger_id: str,
     name: str = Form(...),
-    pattern: str = Form(...),
+    pattern_received: str = Form(""),
+    pattern_sent: str = Form(""),
     reply_messages: Annotated[list[str], Form()] = [],
     case_sensitive: Optional[str] = Form(None),
     days_of_week: Annotated[list[str], Form()] = [],
@@ -1262,7 +1322,7 @@ async def triggers_edit_submit(
     enabled: Optional[str] = Form(None),
 ):
     form_data = _form_to_trigger_payload(
-        name, pattern, reply_messages, case_sensitive, days_of_week,
+        name, pattern_received, pattern_sent, reply_messages, case_sensitive, days_of_week,
         all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
     )
     try:
@@ -1276,7 +1336,7 @@ async def triggers_edit_submit(
                 "is_edit": True,
                 "trigger": {"id": trigger_id},
                 "form": _form_from_submission(
-                    name, pattern, reply_messages, case_sensitive, days_of_week,
+                    name, pattern_received, pattern_sent, reply_messages, case_sensitive, days_of_week,
                     all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
                 ),
                 "day_options": TRIGGER_DAY_OPTIONS,
@@ -1294,7 +1354,7 @@ async def triggers_edit_submit(
                 "is_edit": True,
                 "trigger": {"id": trigger_id},
                 "form": _form_from_submission(
-                    name, pattern, reply_messages, case_sensitive, days_of_week,
+                    name, pattern_received, pattern_sent, reply_messages, case_sensitive, days_of_week,
                     all_day, time_start, time_end, unique_enabled, unique_scope, enabled,
                 ),
                 "day_options": TRIGGER_DAY_OPTIONS,

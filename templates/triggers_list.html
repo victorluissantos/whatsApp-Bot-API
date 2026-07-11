@@ -52,7 +52,7 @@
                         <input type="checkbox" id="selectAllTriggers" onchange="onToggleAllFromHeader(this)">
                     </th>
                     <th>Nome</th>
-                    <th>Padrão</th>
+                    <th>Padrões</th>
                     <th>Horário</th>
                     <th>Única</th>
                     <th>Status</th>
@@ -73,7 +73,18 @@
                     <td>
                         <strong>{{ t.name }}</strong>
                     </td>
-                    <td><code>{{ t.pattern }}</code>{% if t.case_sensitive %} <small>(Aa)</small>{% endif %}</td>
+                    <td>
+                        {% if t.pattern_received %}
+                        <div><small>Recebida:</small> <code>{{ t.pattern_received }}</code></div>
+                        {% endif %}
+                        {% if t.pattern_sent %}
+                        <div><small>Enviada:</small> <code>{{ t.pattern_sent }}</code></div>
+                        {% endif %}
+                        {% if not t.pattern_received and not t.pattern_sent and t.pattern %}
+                        <code>{{ t.pattern }}</code>
+                        {% endif %}
+                        {% if t.case_sensitive %} <small>(Aa)</small>{% endif %}
+                    </td>
                     <td>{{ t.schedule_summary }}</td>
                     <td>{{ t.unique_summary }}</td>
                     <td>

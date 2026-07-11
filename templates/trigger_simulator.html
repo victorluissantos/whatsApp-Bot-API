@@ -82,6 +82,7 @@
 <script>
 let claimedKeys = [];
 let sending = false;
+let chatHistory = [];
 
 const chatMessages = document.getElementById('chatMessages');
 const chatEmpty = document.getElementById('chatEmpty');
@@ -163,6 +164,7 @@ function toggleDebugPanel() {
 
 function clearChat() {
     claimedKeys = [];
+    chatHistory = [];
     chatMessages.innerHTML = '';
     chatMessages.appendChild(chatEmpty);
     chatEmpty.style.display = 'block';
@@ -186,6 +188,11 @@ async function sendMessage(event) {
     chatEmpty.style.display = 'none';
 
     chatMessages.appendChild(createBubble(text, 'outgoing'));
+    chatHistory.push({
+        message: text,
+        origem: 'recebida',
+        data: new Date().toISOString(),
+    });
     messageInput.value = '';
     messageInput.style.height = 'auto';
     scrollToBottom();
@@ -198,6 +205,7 @@ async function sendMessage(event) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 message: text,
+                history: chatHistory,
                 claimed_keys: claimedKeys,
                 phone: brainPhoneInput.value.trim() || null,
             }),
@@ -228,6 +236,11 @@ async function sendMessage(event) {
             chatMessages.appendChild(
                 createBubble(reply.text, 'incoming', reply.trigger_name)
             );
+            chatHistory.push({
+                message: reply.text,
+                origem: 'enviada',
+                data: new Date().toISOString(),
+            });
             scrollToBottom();
         }
     } catch (err) {

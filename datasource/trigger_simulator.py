@@ -36,7 +36,7 @@ def _has_brain_claim(claimed_keys: set[str], unique: dict, now: datetime) -> boo
 
 
 def _evaluate_trigger_candidates(
-    text: str,
+    messages: list[dict],
     active_triggers: list[dict],
     claimed: set[str],
     now: datetime,
@@ -60,13 +60,13 @@ def _evaluate_trigger_candidates(
             )
             continue
 
-        if not triggers_store.message_matches_trigger(text, trigger):
+        if not triggers_store.history_matches_trigger(messages, trigger):
             events.append(
                 {
                     "trigger_id": trigger_id,
                     "trigger_name": trigger_name,
                     "status": "skipped",
-                    "reason": "padrão não corresponde",
+                    "reason": "padrão não corresponde ao histórico",
                 }
             )
             continue
@@ -193,6 +193,35 @@ def _try_brain_simulation(
     return message, events
 
 
+def _normalize_history(messages: list[dict] | None, latest_text: str) -> list[dict]:
+    history: list[dict] = []
+    for item in messages or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("message") or "").strip()
+        if not text:
+            continue
+        origin = str(item.get("origem") or "").strip().lower()
+        if origin not in ("enviada", "recebida"):
+            origin = "recebida"
+        history.append(
+            {
+                "message": text,
+                "origem": origin,
+                "data": str(item.get("data") or ""),
+            }
+        )
+    if not history and latest_text:
+        history.append(
+            {
+                "message": latest_text,
+                "origem": "recebida",
+                "data": "",
+            }
+        )
+    return history
+
+
 def evaluate_message(
     message: str,
     active_triggers: list[dict],
@@ -200,13 +229,15 @@ def evaluate_message(
     now: datetime | None = None,
     mgd=None,
     phone: str | None = None,
+    history: list[dict] | None = None,
 ) -> dict[str, Any]:
     """
     Avalia uma mensagem contra triggers ativos (e Brain, se telefone informado).
     Unique fica só em memória — não grava execuções no MongoDB.
     """
     text = (message or "").strip()
-    if not text:
+    conversation = _normalize_history(history, text)
+    if not conversation:
         return {"replies": [], "events": [], "claimed_keys": sorted(claimed_keys)}
 
     now = now or now_local()
@@ -256,7 +287,7 @@ def evaluate_message(
         }
 
     candidates, candidate_events = _evaluate_trigger_candidates(
-        text, active_triggers, claimed, now
+        conversation, active_triggers, claimed, now
     )
     events.extend(candidate_events)
 

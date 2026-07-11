@@ -91,6 +91,10 @@ def _doc_to_dict(doc: dict) -> dict:
     out["id"] = out.pop("trigger_id")
     out["created_at"] = _iso_utc(out.get("created_at"))
     out["updated_at"] = _iso_utc(out.get("updated_at"))
+    pattern_received, pattern_sent = get_trigger_patterns(out)
+    out["pattern_received"] = pattern_received
+    out["pattern_sent"] = pattern_sent
+    out["pattern"] = pattern_received
     messages = get_reply_messages(out)
     out["reply_messages"] = messages
     out["reply_message"] = messages[0] if messages else ""
@@ -125,15 +129,114 @@ def get_trigger(mgd, trigger_id: str) -> Optional[dict]:
     return _doc_to_dict(doc)
 
 
+def normalize_trigger_patterns(data: dict) -> dict:
+    """Normaliza pattern_received / pattern_sent (legado: pattern → recebida)."""
+    received = str(data.get("pattern_received") or "").strip()
+    sent = str(data.get("pattern_sent") or "").strip()
+    legacy = str(data.get("pattern") or "").strip()
+    if not received and legacy:
+        received = legacy
+    return {"pattern_received": received, "pattern_sent": sent}
+
+
+def get_trigger_patterns(trigger: dict) -> tuple[str, str]:
+    received = str(trigger.get("pattern_received") or trigger.get("pattern") or "").strip()
+    sent = str(trigger.get("pattern_sent") or "").strip()
+    return received, sent
+
+
+def validate_trigger_patterns(pattern_received: str, pattern_sent: str) -> None:
+    received = (pattern_received or "").strip()
+    sent = (pattern_sent or "").strip()
+    if not received and not sent:
+        raise trigger_matcher.PatternSyntaxError(
+            "Informe ao menos um padrão (mensagem recebida ou enviada)"
+        )
+    if received:
+        trigger_matcher.validate_pattern(received)
+    if sent:
+        trigger_matcher.validate_pattern(sent)
+
+
+def partition_messages_by_origin(messages: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Separa mensagens em recebidas/enviadas, cada grupo na ordem do histórico."""
+    received: list[dict] = []
+    sent: list[dict] = []
+    for idx, msg in enumerate(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        item = dict(msg)
+        item["_order"] = idx
+        origin = str(item.get("origem") or "").strip().lower()
+        if origin == "enviada":
+            sent.append(item)
+        else:
+            received.append(item)
+    received.sort(key=lambda m: m.get("_order", 0))
+    sent.sort(key=lambda m: m.get("_order", 0))
+    return received, sent
+
+
+def _message_group_matches_pattern(
+    messages: list[dict], pattern: str, case_sensitive: bool
+) -> bool:
+    expr = (pattern or "").strip()
+    if not expr:
+        return True
+    for msg in messages:
+        text = str(msg.get("message") or "").strip()
+        if not text or text in ("Mensagem não legível", "[Áudio]", "[Mídia]"):
+            continue
+        if trigger_matcher.matches_pattern(text, expr, case_sensitive):
+            return True
+    return False
+
+
+def history_matches_trigger(messages: list[dict], trigger: dict) -> bool:
+    """
+    Avalia padrões de recebida/enviada contra o histórico.
+    Cada lado vazio não restringe; se preenchido, ao menos uma mensagem do grupo deve bater.
+    """
+    pattern_received, pattern_sent = get_trigger_patterns(trigger)
+    if not pattern_received and not pattern_sent:
+        return False
+    case_sensitive = bool(trigger.get("case_sensitive"))
+    received_msgs, sent_msgs = partition_messages_by_origin(messages)
+    if pattern_received and not _message_group_matches_pattern(
+        received_msgs, pattern_received, case_sensitive
+    ):
+        return False
+    if pattern_sent and not _message_group_matches_pattern(
+        sent_msgs, pattern_sent, case_sensitive
+    ):
+        return False
+    return True
+
+
+def preview_matches_trigger(message_text: str, trigger: dict) -> bool:
+    """Fallback sem histórico: só avalia padrão de recebida no preview do painel."""
+    pattern_received, pattern_sent = get_trigger_patterns(trigger)
+    if pattern_sent:
+        return False
+    if not pattern_received:
+        return False
+    return trigger_matcher.matches_pattern(
+        message_text or "",
+        pattern_received,
+        bool(trigger.get("case_sensitive")),
+    )
+
+
 def create_trigger(mgd, data: dict) -> dict:
-    pattern = data["pattern"].strip()
-    validate_trigger_pattern(pattern)
+    patterns = normalize_trigger_patterns(data)
+    validate_trigger_patterns(patterns["pattern_received"], patterns["pattern_sent"])
     trigger_id = str(uuid.uuid4())
     now = datetime.utcnow()
     doc = {
         "trigger_id": trigger_id,
         "name": data["name"].strip(),
-        "pattern": pattern,
+        "pattern_received": patterns["pattern_received"],
+        "pattern_sent": patterns["pattern_sent"],
         "case_sensitive": bool(data.get("case_sensitive", False)),
         "reply_messages": _reply_messages_from_data(data),
         "enabled": bool(data.get("enabled", True)),
@@ -150,11 +253,12 @@ def update_trigger(mgd, trigger_id: str, data: dict) -> Optional[dict]:
     existing = _coll(mgd).find_one({"trigger_id": trigger_id})
     if not existing:
         return None
-    pattern = data["pattern"].strip()
-    validate_trigger_pattern(pattern)
+    patterns = normalize_trigger_patterns(data)
+    validate_trigger_patterns(patterns["pattern_received"], patterns["pattern_sent"])
     update = {
         "name": data["name"].strip(),
-        "pattern": pattern,
+        "pattern_received": patterns["pattern_received"],
+        "pattern_sent": patterns["pattern_sent"],
         "case_sensitive": bool(data.get("case_sensitive", False)),
         "reply_messages": _reply_messages_from_data(data),
         "enabled": bool(data.get("enabled", True)),
@@ -164,7 +268,7 @@ def update_trigger(mgd, trigger_id: str, data: dict) -> Optional[dict]:
     }
     _coll(mgd).update_one(
         {"trigger_id": trigger_id},
-        {"$set": update, "$unset": {"reply_message": ""}},
+        {"$set": update, "$unset": {"reply_message": "", "pattern": ""}},
     )
     return get_trigger(mgd, trigger_id)
 
@@ -261,10 +365,15 @@ def format_unique_summary(unique: dict) -> str:
 
 
 def message_matches_trigger(message: str, trigger: dict) -> bool:
-    """Avalia se a mensagem satisfaz o padrão do trigger."""
+    """Compat: avalia só o padrão de recebida em uma única mensagem."""
+    pattern_received, pattern_sent = get_trigger_patterns(trigger)
+    if pattern_sent:
+        return False
+    if not pattern_received:
+        return False
     return trigger_matcher.matches_pattern(
         message,
-        trigger.get("pattern", ""),
+        pattern_received,
         bool(trigger.get("case_sensitive")),
     )
 
@@ -418,14 +527,17 @@ def release_execution_claim(
 
 
 def validate_trigger_pattern(pattern: str) -> None:
-    """Valida sintaxe do campo pattern."""
+    """Valida sintaxe de um padrão (legado / teste unitário)."""
     trigger_matcher.validate_pattern(pattern)
 
 
 def _trigger_export_item(doc: dict) -> dict:
+    pattern_received, pattern_sent = get_trigger_patterns(doc)
     return {
         "name": doc["name"],
-        "pattern": doc["pattern"],
+        "pattern_received": pattern_received,
+        "pattern_sent": pattern_sent,
+        "pattern": pattern_received,
         "case_sensitive": doc.get("case_sensitive", False),
         "reply_messages": get_reply_messages(doc),
         "enabled": doc.get("enabled", True),
@@ -447,22 +559,23 @@ def _validate_import_item(raw: dict, index: int) -> dict:
     if not isinstance(raw, dict):
         raise ValueError(f"Item {index}: deve ser um objeto")
     name = str(raw.get("name") or "").strip()
-    pattern = str(raw.get("pattern") or "").strip()
+    patterns = normalize_trigger_patterns(raw)
     if not name:
         raise ValueError(f"Item {index}: campo 'name' é obrigatório")
-    if not pattern:
-        raise ValueError(f"Item {index}: campo 'pattern' é obrigatório")
+    try:
+        validate_trigger_patterns(
+            patterns["pattern_received"], patterns["pattern_sent"]
+        )
+    except trigger_matcher.PatternSyntaxError as e:
+        raise ValueError(f"Item {index}: padrão inválido — {e}") from e
     try:
         reply_messages = _reply_messages_from_data(raw)
     except ValueError as e:
         raise ValueError(f"Item {index}: {e}") from e
-    try:
-        validate_trigger_pattern(pattern)
-    except trigger_matcher.PatternSyntaxError as e:
-        raise ValueError(f"Item {index}: padrão inválido — {e}") from e
     return {
         "name": name,
-        "pattern": pattern,
+        "pattern_received": patterns["pattern_received"],
+        "pattern_sent": patterns["pattern_sent"],
         "case_sensitive": bool(raw.get("case_sensitive", False)),
         "reply_messages": reply_messages,
         "enabled": bool(raw.get("enabled", True)),

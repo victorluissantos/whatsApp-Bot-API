@@ -74,7 +74,7 @@ def _chat_merge_key(chat: dict) -> str:
 
 
 def merge_chats_for_processing(raw: list[dict], cached: list[dict]) -> list[dict]:
-    """Mescla leitura atual do DOM com cache (preserva unread se o DOM falhar no contador)."""
+    """Mescla leitura atual do DOM com cache (metadados estáveis; unread vem do DOM)."""
     by_key: dict[str, dict] = {}
     for chat in cached or []:
         key = _chat_merge_key(chat)
@@ -85,10 +85,6 @@ def merge_chats_for_processing(raw: list[dict], cached: list[dict]) -> list[dict
         if not key:
             continue
         merged = dict(by_key.get(key) or {})
-        prev_unread = str(merged.get("unreadCount") or "0").strip()
         merged.update(chat)
-        raw_unread = str(chat.get("unreadCount") or "0").strip()
-        if raw_unread in ("", "0") and prev_unread not in ("", "0"):
-            merged["unreadCount"] = prev_unread
         by_key[key] = merged
     return list(by_key.values())

@@ -136,12 +136,6 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
         if not message_text or message_text == "Sem mensagem":
             stats["skipped"] += 1
             continue
-        if _unread_int(chat) <= 0:
-            # Brain na 1ª msg do dia: não depende só do contador unread do DOM.
-            if not (brain_enabled and not allow_triggers):
-                stats["skipped"] += 1
-                continue
-
         phone = resolve_phone(chat)
         if not phone:
             logger.warning(
@@ -198,20 +192,12 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
                 keep_unseen.add(chat_key)
             continue
 
-        # Descobre matches (schedule+pattern) e se unique já bloqueia — ANTES de abrir o chat.
-        candidates: list[dict] = []
+        # Horário + unique — pattern avaliado no histórico ao abrir o chat.
+        eligible_triggers: list[dict] = []
         unique_blocked_only = False
         for trigger in active_triggers:
             if not triggers_store.is_within_schedule(trigger.get("schedule") or {}, now):
                 logger.debug("Trigger %r fora do horário", trigger.get("name"))
-                continue
-            if not triggers_store.message_matches_trigger(message_text, trigger):
-                logger.debug(
-                    "Trigger %r não bate: pattern=%r msg=%r",
-                    trigger.get("name"),
-                    trigger.get("pattern"),
-                    message_text[:80],
-                )
                 continue
             unique_cfg = trigger.get("unique") or {}
             if unique_cfg.get("enabled") and triggers_store.has_execution_claim(
@@ -221,8 +207,6 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
                 unique_cfg,
                 now,
             ):
-                # Unique só libera no soft-delete explícito do job — NÃO reabrir
-                # por existência de job deleted (senão reenvia o dia inteiro).
                 logger.info(
                     "Trigger %r já executado (unique) para %s",
                     trigger.get("name"),
@@ -231,22 +215,20 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
                 unique_blocked_only = True
                 stats["skipped"] += 1
                 continue
-            candidates.append(trigger)
+            eligible_triggers.append(trigger)
 
-        if not candidates:
+        if not eligible_triggers:
             if unique_blocked_only and chat_key:
-                # Mantém elegível: soft-delete pode liberar o unique e o mesmo unread reaparece.
                 keep_unseen.add(chat_key)
             else:
                 logger.info(
-                    "Triggers: chat %s msg=%r — nenhum trigger disparou (pattern/horário/unique)",
+                    "Triggers: chat %s msg=%r — nenhum trigger no horário/unique",
                     phone,
                     message_text[:80],
                 )
             continue
 
         if messages_runner is None or nav is None:
-            # Brain antes dos triggers quando unique já liberou triggers.
             if brain_enabled and _try_brain_enqueue(
                 mgd,
                 phone,
@@ -258,7 +240,20 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
                 keep_unseen,
             ):
                 continue
-            # Sem browser: só enfileira no Rabbit (API/async legado).
+            candidates = [
+                t
+                for t in eligible_triggers
+                if triggers_store.preview_matches_trigger(message_text, t)
+            ]
+            if not candidates:
+                logger.info(
+                    "Triggers: chat %s msg=%r — nenhum trigger disparou (preview/horário/unique)",
+                    phone,
+                    message_text[:80],
+                )
+                if chat_key:
+                    keep_unseen.add(chat_key)
+                continue
             fired_for_chat = _enqueue_candidates(
                 mgd,
                 phone,
@@ -273,7 +268,7 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
             )
             if not fired_for_chat:
                 logger.info(
-                    "Triggers: chat %s msg=%r — nenhum trigger disparou (pattern/horário/unique)",
+                    "Triggers: chat %s msg=%r — nenhum trigger disparou (preview/horário/unique)",
                     phone,
                     message_text[:80],
                 )
@@ -281,7 +276,6 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
                     keep_unseen.add(chat_key)
             continue
 
-        # Uma abertura: validar + enviar no mesmo chat (sem RabbitMQ reabrir).
         fired_for_chat = _validate_and_send_inline(
             messages_runner,
             nav,
@@ -289,7 +283,7 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
             phone,
             message_text,
             contact_key,
-            candidates,
+            eligible_triggers,
             now,
             stats,
             dedup_key,
@@ -389,7 +383,7 @@ def _validate_and_send_inline(
     phone: str,
     message_text: str,
     contact_key: str,
-    candidates: list[dict],
+    eligible_triggers: list[dict],
     now,
     stats: dict,
     dedup_key: str,
@@ -399,8 +393,8 @@ def _validate_and_send_inline(
     triggers_allowed: bool = True,
 ) -> bool:
     """
-    Abre o chat uma vez, valida (recebida + sem humano) e envia as respostas
-    no mesmo chat aberto. Registra na fila como job inline (sem RabbitMQ).
+    Abre o chat uma vez, valida (histórico + sem humano), faz match nos grupos
+    recebida/enviada e envia as respostas no mesmo chat aberto.
     """
     if not send_lock.acquire(timeout=_BROWSER_LOCK_TIMEOUT_SECONDS):
         logger.warning(
@@ -438,16 +432,6 @@ def _validate_and_send_inline(
             return False
 
         messages = result.get("messages") or []
-        if messages and not _preview_is_incoming(messages, message_text):
-            logger.info(
-                "Triggers: chat %s msg=%r ignorado (última mensagem não recebida)",
-                phone,
-                message_text[:80],
-            )
-            stats["skipped"] += 1
-            messages_runner._leave_conversation(nav, restore_unread=True)
-            return False
-
         if messages and _chat_has_human_outbound(mgd, phone, messages):
             logger.info(
                 "Triggers: chat %s msg=%r ignorado (conversa com atendimento humano)",
@@ -479,12 +463,22 @@ def _validate_and_send_inline(
                 messages_runner._leave_conversation(nav, restore_unread=True)
             return False
 
-        remaining = list(candidates)
-        if not remaining:
+        candidates = [
+            trigger
+            for trigger in eligible_triggers
+            if triggers_store.history_matches_trigger(messages, trigger)
+        ]
+        if not candidates:
+            logger.info(
+                "Triggers: chat %s — nenhum trigger bateu no histórico (recebida/enviada)",
+                phone,
+            )
+            stats["skipped"] += 1
             if chat_opened:
                 messages_runner._leave_conversation(nav, restore_unread=True)
-            return sent_any
+            return False
 
+        remaining = list(candidates)
         while remaining:
             trigger = remaining.pop(0)
             stats["matched"] += 1
@@ -608,25 +602,18 @@ def diff_changed_chats(new_chats: list[dict]) -> list[dict]:
 
 def chats_to_evaluate(new_chats: list[dict]) -> list[dict]:
     """
-    Unread atuais + chats com mensagem nova.
-    Assim, após soft-delete liberar unique, o mesmo "Bom dia" unread re-dispara
-    sem precisar de outra mensagem no pane.
-    """
-    by_key: dict[str, dict] = {}
-    for chat in diff_changed_chats(new_chats):
-        key = _chat_key(chat)
-        if key:
-            by_key[key] = chat
+    Só chats com contador unread >= 1 no DOM (ex.: bolinha com "1").
+    Bolinha verde sem número = marcado como não lido, sem mensagem nova — ignorar.
+  """
+    result: list[dict] = []
     for chat in new_chats:
-        if _unread_int(chat) <= 0:
+        if _unread_int(chat) < 1:
             continue
         last_msg = (chat.get("lastMessage") or "").strip()
         if not last_msg or last_msg == "Sem mensagem":
             continue
-        key = _chat_key(chat)
-        if key:
-            by_key[key] = chat
-    return list(by_key.values())
+        result.append(chat)
+    return result
 
 
 def _sync_seen_from_chats(chats: list[dict]) -> None:

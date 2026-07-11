@@ -7,7 +7,7 @@
     <div class="page-header">
         <div>
             <h1>{% if is_edit %}Editar trigger{% else %}Novo trigger{% endif %}</h1>
-            <p>Configure padrão, horário e mensagem de resposta</p>
+            <p>Configure padrões no histórico (recebida/enviada), horário e mensagens de resposta</p>
         </div>
         <a class="btn btn-secondary" href="/triggers">Voltar</a>
     </div>
@@ -23,20 +23,47 @@
         </div>
 
         <div class="form-group">
-            <label for="pattern">Padrão (LIKE %, AND, OR, IN)</label>
-            <input type="text" id="pattern" name="pattern" maxlength="500" required value="{{ form.pattern }}" placeholder="%preco% and %pr%">
+            <label for="pattern_received">Mensagem recebida (LIKE %, AND, OR, IN)</label>
+            <input type="text" id="pattern_received" name="pattern_received" maxlength="500" value="{{ form.pattern_received }}" placeholder="%preco% and %?%">
+            <span class="hint">
+                Avalia o histórico de mensagens <strong>recebidas</strong> (até 50). Deixe vazio se não restringir este lado.
+            </span>
+        </div>
+
+        <div class="form-group">
+            <label for="pattern_sent">Mensagem enviada (LIKE %, AND, OR, IN)</label>
+            <input type="text" id="pattern_sent" name="pattern_sent" maxlength="500" value="{{ form.pattern_sent }}" placeholder="%promo% or %oferta%">
+            <span class="hint">
+                Avalia o histórico de mensagens <strong>enviadas</strong> (sistema ou humano no WhatsApp). Deixe vazio se não restringir este lado.
+            </span>
+        </div>
+
+        <div class="form-group pattern-hint-box">
             <span class="hint">
                 LIKE: <code>%preco%</code> contém · <code>preco%</code> começa · <code>%preco</code> termina · <code>%%</code> qualquer<br>
-                AND: <code>%preco% and %pr%</code> — as duas condições<br>
-                OR: <code>%preco% or %promo%</code> — qualquer uma<br>
-                IN: <code>in(preco,valor,promo)</code> — contém qualquer termo (sem % vira %termo%)<br>
-                Combine: <code>(%preco% or in(promo,oferta)) and %?</code>
+                AND: <code>%preco% and %pr%</code> — as duas condições na mesma mensagem<br>
+                OR: <code>%preco% or %promo%</code> — qualquer uma na mesma mensagem<br>
+                IN: <code>in(preco,valor,promo)</code> — contém qualquer termo<br>
+                Combine lados: recebida <code>%oi%</code> + enviada <code>%promo%</code> = ambos devem bater em alguma msg do grupo<br>
+                Pelo menos um dos dois campos é obrigatório.
             </span>
         </div>
 
         <div class="form-group pattern-test-box">
             <label>Testar padrão</label>
-            <input type="text" id="testMessage" placeholder="Digite uma mensagem de exemplo...">
+            <div class="time-row">
+                <div>
+                    <label for="testSide">Lado</label>
+                    <select id="testSide">
+                        <option value="received">Recebida</option>
+                        <option value="sent">Enviada</option>
+                    </select>
+                </div>
+                <div style="flex:1;">
+                    <label for="testMessage">Mensagem de exemplo</label>
+                    <input type="text" id="testMessage" placeholder="Digite uma mensagem de exemplo...">
+                </div>
+            </div>
             <button type="button" class="btn btn-secondary btn-sm" onclick="testPattern()" style="margin-top:8px;">Testar</button>
             <div id="testPatternResult" class="result" style="display:none; margin-top:8px;"></div>
         </div>
@@ -176,26 +203,37 @@ function toggleUniqueScope() {
 }
 
 function testPattern() {
-    const pattern = document.getElementById('pattern').value;
+    const side = document.getElementById('testSide').value;
+    const patternField = side === 'sent'
+        ? document.getElementById('pattern_sent')
+        : document.getElementById('pattern_received');
+    const pattern = patternField.value;
     const message = document.getElementById('testMessage').value;
     const caseSensitive = document.querySelector('input[name="case_sensitive"]')?.checked || false;
     const resultDiv = document.getElementById('testPatternResult');
     resultDiv.style.display = 'block';
+
+    if (!pattern.trim()) {
+        resultDiv.textContent = 'Informe o padrão do lado selecionado antes de testar.';
+        return;
+    }
+
     resultDiv.textContent = 'Testando...';
 
     fetch('/triggers/test-match', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pattern, message, case_sensitive: caseSensitive }),
+        body: JSON.stringify({ pattern, message, case_sensitive: caseSensitive, side }),
     })
         .then(async (response) => {
             const data = await response.json();
             if (!response.ok) {
                 throw new Error(data.detail || JSON.stringify(data));
             }
+            const sideLabel = side === 'sent' ? 'enviada' : 'recebida';
             resultDiv.textContent = data.matches
-                ? '✅ Dispara — a mensagem satisfaz o padrão'
-                : '❌ Não dispara — a mensagem não satisfaz o padrão';
+                ? `✅ Dispara — a mensagem ${sideLabel} satisfaz o padrão`
+                : `❌ Não dispara — a mensagem ${sideLabel} não satisfaz o padrão`;
         })
         .catch((err) => {
             resultDiv.textContent = 'Erro: ' + err.message;
