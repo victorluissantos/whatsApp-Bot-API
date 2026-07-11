@@ -157,8 +157,9 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
         # Brain sempre primeiro quando ativo e ainda não executou no escopo unique.
         if brain_enabled and not allow_triggers:
             brain_sent = False
+            brain_defer_triggers = False
             if messages_runner is not None and nav is not None:
-                brain_sent = _brain_first_inline(
+                brain_sent, brain_defer_triggers = _brain_first_inline(
                     messages_runner,
                     nav,
                     mgd,
@@ -172,7 +173,7 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
                     keep_unseen,
                 )
             else:
-                brain_sent = _try_brain_enqueue(
+                brain_sent, brain_defer_triggers = _try_brain_enqueue(
                     mgd,
                     phone,
                     contact_key,
@@ -184,13 +185,14 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
                 )
             if brain_sent:
                 continue
-            logger.info(
-                "Brain: 1ª resposta do dia pendente para %s — triggers suprimidos neste ciclo",
-                phone,
-            )
-            if chat_key:
-                keep_unseen.add(chat_key)
-            continue
+            if not brain_defer_triggers:
+                logger.info(
+                    "Brain: 1ª resposta do dia pendente para %s — triggers suprimidos neste ciclo",
+                    phone,
+                )
+                if chat_key:
+                    keep_unseen.add(chat_key)
+                continue
 
         # Horário + unique — pattern avaliado no histórico ao abrir o chat.
         eligible_triggers: list[dict] = []
@@ -229,17 +231,19 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
             continue
 
         if messages_runner is None or nav is None:
-            if brain_enabled and _try_brain_enqueue(
-                mgd,
-                phone,
-                contact_key,
-                now,
-                stats,
-                dedup_key,
-                chat_key,
-                keep_unseen,
-            ):
-                continue
+            if brain_enabled:
+                brain_sent, _brain_defer = _try_brain_enqueue(
+                    mgd,
+                    phone,
+                    contact_key,
+                    now,
+                    stats,
+                    dedup_key,
+                    chat_key,
+                    keep_unseen,
+                )
+                if brain_sent:
+                    continue
             candidates = [
                 t
                 for t in eligible_triggers
@@ -758,14 +762,15 @@ def _brain_first_inline(
     dedup_key: str,
     chat_key: str,
     keep_unseen: set[str],
-) -> bool:
+) -> tuple[bool, bool]:
     """
     Brain na 1ª mensagem do dia: API primeiro, depois abre o chat e envia.
     Não usa validação estrita de preview (evita bloquear antes da API).
+    Retorna (enviou, deferir_para_triggers).
     """
     config = brain_store.get_config(mgd)
     if not config or not config.get("enabled"):
-        return False
+        return False, False
 
     unique_cfg = config.get("unique") or {}
     if unique_cfg.get("enabled") and brain_store.has_execution_claim(
@@ -775,27 +780,36 @@ def _brain_first_inline(
         stats["skipped"] += 1
         if chat_key:
             keep_unseen.add(chat_key)
-        return False
+        return False, False
 
     message, reason = brain_store.resolve_message_for_phone(
         mgd, phone, now, contact_key=contact_key
     )
     if not message:
+        if brain_store.defers_to_triggers(reason):
+            brain_store.record_brain_attempt_without_message(mgd, contact_key, now)
+            logger.info(
+                "Brain sem mensagem para %s (%s) — seguindo triggers",
+                phone,
+                reason or "sem motivo",
+            )
+            return False, True
         logger.info(
-            "Brain não obteve mensagem para %s (%s) — triggers suprimidos",
+            "Brain não obteve mensagem para %s (%s) — aguardando retry",
             phone,
             reason or "sem motivo",
         )
-        return False
+        return False, False
 
     if not send_lock.acquire(timeout=_BROWSER_LOCK_TIMEOUT_SECONDS):
         logger.warning(
             "Brain: lock ocupado após API — enfileirando para %s",
             phone,
         )
-        return _brain_enqueue_message(
+        sent = _brain_enqueue_message(
             mgd, phone, message, config, contact_key, now, stats, dedup_key
         )
+        return sent, False
 
     chat_opened = False
     try:
@@ -805,7 +819,7 @@ def _brain_first_inline(
         except Exception:
             logger.exception("Brain: falha ao abrir chat para %s", phone)
             stats["errors"] += 1
-            return False
+            return False, False
 
         if not result or not result.get("success"):
             logger.warning(
@@ -816,7 +830,7 @@ def _brain_first_inline(
             stats["skipped"] += 1
             if chat_opened:
                 messages_runner._leave_conversation(nav, restore_unread=True)
-            return False
+            return False, False
 
         messages = result.get("messages") or []
         if not _chat_allowed_for_reply(
@@ -828,7 +842,7 @@ def _brain_first_inline(
             )
             stats["skipped"] += 1
             messages_runner._leave_conversation(nav, restore_unread=True)
-            return False
+            return False, False
 
         if not brain_store.try_claim_execution(mgd, contact_key, unique_cfg, now):
             logger.info("Brain já executado (unique) para %s", phone)
@@ -836,7 +850,7 @@ def _brain_first_inline(
             if chat_key:
                 keep_unseen.add(chat_key)
             messages_runner._leave_conversation(nav, restore_unread=True)
-            return False
+            return False, False
 
         bot = AutoBoot.WhatsAppBot(nav, mgd)
         enqueue_kwargs = _brain_enqueue_kwargs(config, contact_key, now)
@@ -869,7 +883,7 @@ def _brain_first_inline(
                 stats["queued"] += 1
                 _mark_processed(dedup_key)
                 messages_runner._leave_conversation(nav, restore_unread=False)
-                return True
+                return True, False
 
             _release_brain_claim_if_needed(mgd, config, contact_key, now)
             stats["errors"] += 1
@@ -883,7 +897,7 @@ def _brain_first_inline(
 
         if chat_opened:
             messages_runner._leave_conversation(nav, restore_unread=True)
-        return False
+        return False, False
     finally:
         send_lock.release()
 
@@ -946,10 +960,10 @@ def _prepare_brain_message(
     stats: dict,
     chat_key: str,
     keep_unseen: set[str],
-) -> Optional[tuple[str, dict]]:
+) -> tuple[Optional[tuple[str, dict]], bool]:
     config = brain_store.get_config(mgd)
     if not config or not config.get("enabled"):
-        return None
+        return None, False
 
     unique_cfg = config.get("unique") or {}
     if unique_cfg.get("enabled") and brain_store.has_execution_claim(
@@ -959,24 +973,32 @@ def _prepare_brain_message(
         stats["skipped"] += 1
         if chat_key:
             keep_unseen.add(chat_key)
-        return None
+        return None, False
 
     message, reason = brain_store.resolve_message_for_phone(
         mgd, phone, now, contact_key=contact_key
     )
     if not message:
+        if brain_store.defers_to_triggers(reason):
+            brain_store.record_brain_attempt_without_message(mgd, contact_key, now)
+            logger.info(
+                "Brain sem mensagem para %s (%s) — seguindo triggers",
+                phone,
+                reason or "sem motivo",
+            )
+            return None, True
         if reason:
             logger.info("Brain não obteve mensagem para %s (%s)", phone, reason)
-        return None
+        return None, False
 
     if not brain_store.try_claim_execution(mgd, contact_key, unique_cfg, now):
         logger.info("Brain já executado (unique) para %s", phone)
         stats["skipped"] += 1
         if chat_key:
             keep_unseen.add(chat_key)
-        return None
+        return None, False
 
-    return message, config
+    return (message, config), False
 
 
 def _try_brain_enqueue(
@@ -988,18 +1010,21 @@ def _try_brain_enqueue(
     dedup_key: str,
     chat_key: str,
     keep_unseen: set[str],
-) -> bool:
-    prepared = _prepare_brain_message(
+) -> tuple[bool, bool]:
+    prepared, defer_triggers = _prepare_brain_message(
         mgd, phone, contact_key, now, stats, chat_key, keep_unseen
     )
+    if defer_triggers:
+        return False, True
     if not prepared:
-        return False
+        return False, False
 
     message, config = prepared
-    return _brain_enqueue_message(
+    sent = _brain_enqueue_message(
         mgd, phone, message, config, contact_key, now, stats, dedup_key,
         already_claimed=True,
     )
+    return sent, False
 
 
 def _try_brain_inline(
@@ -1013,10 +1038,10 @@ def _try_brain_inline(
     chat_key: str,
     keep_unseen: set[str],
 ) -> bool:
-    prepared = _prepare_brain_message(
+    prepared, defer_triggers = _prepare_brain_message(
         mgd, phone, contact_key, now, stats, chat_key, keep_unseen
     )
-    if not prepared:
+    if defer_triggers or not prepared:
         return False
 
     message, config = prepared

@@ -105,16 +105,16 @@ def _try_brain_simulation(
     phone: str,
     claimed: set[str],
     now: datetime,
-) -> tuple[Optional[str], list[dict[str, str]]]:
+) -> tuple[Optional[str], list[dict[str, str]], bool]:
     """
     Tenta obter resposta do Brain (chama API real com o telefone informado).
-    Retorna (mensagem ou None, eventos de debug).
+    Retorna (mensagem ou None, eventos de debug, deferir_para_triggers).
     """
     config = brain_store.get_config(mgd)
     events: list[dict[str, str]] = []
 
     if not config:
-        return None, events
+        return None, events, False
 
     if not config.get("enabled"):
         events.append(
@@ -125,7 +125,7 @@ def _try_brain_simulation(
                 "reason": "brain inativo",
             }
         )
-        return None, events
+        return None, events, False
 
     schedule = config.get("schedule") or {}
     if not triggers_store.is_within_schedule(schedule, now):
@@ -137,7 +137,7 @@ def _try_brain_simulation(
                 "reason": "fora do horário",
             }
         )
-        return None, events
+        return None, events, False
 
     unique_cfg = config.get("unique") or {}
     if _has_brain_claim(claimed, unique_cfg, now):
@@ -149,7 +149,7 @@ def _try_brain_simulation(
                 "reason": "unique já executado nesta simulação",
             }
         )
-        return None, events
+        return None, events, False
 
     phone_digits = "".join(filter(str.isdigit, str(phone or "")))
     if not phone_digits:
@@ -161,20 +161,30 @@ def _try_brain_simulation(
                 "reason": "telefone inválido",
             }
         )
-        return None, events
+        return None, events, False
 
-    message = brain_store.resolve_message_for_phone(mgd, phone_digits, now)[0]
+    message, reason = brain_store.resolve_message_for_phone(mgd, phone_digits, now)
     if not message:
         field = config.get("response_field") or ""
+        defer_triggers = brain_store.defers_to_triggers(reason)
         events.append(
             {
                 "trigger_id": BRAIN_SIMULATOR_ID,
                 "trigger_name": BRAIN_SIMULATOR_NAME,
                 "status": "skipped",
-                "reason": f"campo {field!r} vazio ou API sem resposta",
+                "reason": (
+                    f"campo {field!r} vazio — seguindo triggers"
+                    if defer_triggers
+                    else f"campo {field!r} vazio ou API sem resposta"
+                ),
             }
         )
-        return None, events
+        if defer_triggers and unique_cfg.get("enabled"):
+            scope_key = triggers_store.unique_scope_key(
+                str(unique_cfg.get("scope") or "day"), now
+            )
+            claimed.add(_brain_claim_key(scope_key))
+        return None, events, defer_triggers
 
     if unique_cfg.get("enabled"):
         scope_key = triggers_store.unique_scope_key(
@@ -190,7 +200,7 @@ def _try_brain_simulation(
             "reason": f"resposta via API ({config.get('response_field')})",
         }
     )
-    return message, events
+    return message, events, False
 
 
 def _normalize_history(messages: list[dict] | None, latest_text: str) -> list[dict]:
@@ -255,7 +265,7 @@ def evaluate_message(
             allow_triggers = _has_brain_claim(claimed, unique_cfg, now)
 
     if phone_value and mgd is not None and brain_active and not allow_triggers:
-        brain_message, brain_events = _try_brain_simulation(
+        brain_message, brain_events, defer_triggers = _try_brain_simulation(
             mgd, phone_value, claimed, now
         )
         events.extend(brain_events)
@@ -272,19 +282,20 @@ def evaluate_message(
                 "events": events,
                 "claimed_keys": sorted(claimed),
             }
-        events.append(
-            {
-                "trigger_id": BRAIN_SIMULATOR_ID,
-                "trigger_name": BRAIN_SIMULATOR_NAME,
-                "status": "skipped",
-                "reason": "1ª resposta do dia — triggers suprimidos (brain sem resposta)",
+        if not defer_triggers:
+            events.append(
+                {
+                    "trigger_id": BRAIN_SIMULATOR_ID,
+                    "trigger_name": BRAIN_SIMULATOR_NAME,
+                    "status": "skipped",
+                    "reason": "1ª resposta do dia — triggers suprimidos (brain sem resposta)",
+                }
+            )
+            return {
+                "replies": replies,
+                "events": events,
+                "claimed_keys": sorted(claimed),
             }
-        )
-        return {
-            "replies": replies,
-            "events": events,
-            "claimed_keys": sorted(claimed),
-        }
 
     candidates, candidate_events = _evaluate_trigger_candidates(
         conversation, active_triggers, claimed, now

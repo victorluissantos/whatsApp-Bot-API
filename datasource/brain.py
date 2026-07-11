@@ -232,6 +232,28 @@ def resolve_message_for_phone(
     return None, last_reason
 
 
+def defers_to_triggers(reason: str) -> bool:
+    """
+    True quando o Brain consultou (ou tentou) a API mas não há mensagem para enviar.
+    Nesses casos os triggers normais devem seguir o fluxo.
+    """
+    return reason in ("campo_vazio", "api_status_false", "api_erro")
+
+
+def record_brain_attempt_without_message(
+    mgd,
+    contact_key: str,
+    now: Optional[datetime] = None,
+) -> None:
+    """Consome o escopo unique do Brain sem envio, liberando triggers no mesmo dia."""
+    config = get_config(mgd)
+    if not config:
+        return
+    unique_cfg = config.get("unique") or {}
+    if unique_cfg.get("enabled"):
+        try_claim_execution(mgd, contact_key, unique_cfg, now or now_local())
+
+
 def is_enabled(mgd) -> bool:
     config = get_config(mgd)
     return bool(config and config.get("enabled"))
