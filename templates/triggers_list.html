@@ -38,11 +38,15 @@
         <button type="button" id="bulkDeactivateBtn" class="btn btn-secondary" onclick="submitBulkDeactivate()" disabled>
             Inativar selecionados
         </button>
+        <button type="button" id="bulkDeleteBtn" class="btn-danger" onclick="submitBulkDelete()" disabled>
+            Excluir selecionados
+        </button>
         <button type="button" class="btn btn-secondary" onclick="toggleAllTriggers(this)">Selecionar todos</button>
         <small id="selectedCountLabel">0 selecionado(s)</small>
     </div>
 
     <form id="bulkDeactivateForm" method="post" action="/triggers/deactivate" style="display:none;"></form>
+    <form id="bulkDeleteForm" method="post" action="/triggers/delete" style="display:none;"></form>
 
     <div class="trigger-table-wrap">
         <table class="trigger-table">
@@ -151,13 +155,18 @@ function updateTriggerSelectionState() {
     const totalCheckboxes = document.querySelectorAll('.trigger-checkbox').length;
     const selectAll = document.getElementById('selectAllTriggers');
     const bulkBtn = document.getElementById('bulkDeactivateBtn');
+    const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
     const selectedLabel = document.getElementById('selectedCountLabel');
+    const hasSelection = selectedIds.length === 0;
 
     if (selectAll) {
         selectAll.checked = selectedIds.length > 0 && selectedIds.length === totalCheckboxes;
     }
     if (bulkBtn) {
-        bulkBtn.disabled = selectedIds.length === 0;
+        bulkBtn.disabled = hasSelection;
+    }
+    if (bulkDeleteBtn) {
+        bulkDeleteBtn.disabled = hasSelection;
     }
     if (selectedLabel) {
         selectedLabel.textContent = `${selectedIds.length} selecionado(s)`;
@@ -186,12 +195,12 @@ function toggleAllTriggers(btn) {
     updateTriggerSelectionState();
 }
 
-function submitBulkDeactivate() {
+function submitBulkForm(formId, confirmMsg) {
     const selectedIds = getSelectedTriggerIds();
     if (!selectedIds.length) return;
-    if (!confirm(`Inativar ${selectedIds.length} trigger(s) selecionado(s)?`)) return;
+    if (!confirm(confirmMsg.replace('{n}', String(selectedIds.length)))) return;
 
-    const form = document.getElementById('bulkDeactivateForm');
+    const form = document.getElementById(formId);
     form.innerHTML = '';
     selectedIds.forEach((id) => {
         const input = document.createElement('input');
@@ -201,6 +210,20 @@ function submitBulkDeactivate() {
         form.appendChild(input);
     });
     form.submit();
+}
+
+function submitBulkDeactivate() {
+    submitBulkForm(
+        'bulkDeactivateForm',
+        'Inativar {n} trigger(s) selecionado(s)?'
+    );
+}
+
+function submitBulkDelete() {
+    submitBulkForm(
+        'bulkDeleteForm',
+        'Excluir permanentemente {n} trigger(s) selecionado(s)? Esta ação não pode ser desfeita.'
+    );
 }
 
 updateTriggerSelectionState();

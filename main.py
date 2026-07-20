@@ -1392,6 +1392,19 @@ async def triggers_deactivate_submit(
     return RedirectResponse(url=f"/triggers?{params}", status_code=303)
 
 
+@app.post("/triggers/delete", include_in_schema=False)
+async def triggers_delete_bulk_submit(
+    trigger_ids: Annotated[list[str], Form()] = [],
+):
+    result = triggers_store.delete_triggers_bulk(mgd, trigger_ids)
+    if result["deleted"] == 0:
+        params = urlencode({"error": "Nenhum trigger válido foi selecionado para excluir"})
+        return RedirectResponse(url=f"/triggers?{params}", status_code=303)
+
+    params = urlencode({"msg": f"{result['deleted']} trigger(s) excluído(s)"})
+    return RedirectResponse(url=f"/triggers?{params}", status_code=303)
+
+
 # --- Triggers: API JSON (Swagger) ---
 
 @app.get("/triggers/all", tags=["Triggers"], response_model=TriggerListResponse)

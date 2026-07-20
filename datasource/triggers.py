@@ -177,12 +177,21 @@ def partition_messages_by_origin(messages: list[dict]) -> tuple[list[dict], list
     return received, sent
 
 
-def _message_group_matches_pattern(
+def _strip_group_negation(pattern: str) -> Optional[str]:
+    """Se o padrão inteiro começa com NOT, retorna a expressão interna."""
+    expr = (pattern or "").strip()
+    if not re.match(r"^not\s+", expr, re.IGNORECASE):
+        return None
+    inner = re.sub(r"^not\s+", "", expr, count=1, flags=re.IGNORECASE).strip()
+    return inner or None
+
+
+def _message_group_any_matches(
     messages: list[dict], pattern: str, case_sensitive: bool
 ) -> bool:
     expr = (pattern or "").strip()
     if not expr:
-        return True
+        return False
     for msg in messages:
         text = str(msg.get("message") or "").strip()
         if not text or text in ("Mensagem não legível", "[Áudio]", "[Mídia]"):
@@ -190,6 +199,26 @@ def _message_group_matches_pattern(
         if trigger_matcher.matches_pattern(text, expr, case_sensitive):
             return True
     return False
+
+
+def _message_group_matches_pattern(
+    messages: list[dict], pattern: str, case_sensitive: bool
+) -> bool:
+    """
+    Avalia o grupo de mensagens contra o padrão.
+    Padrão positivo: ao menos uma mensagem do grupo deve satisfazer a expressão.
+    Padrão com NOT no topo (ex.: NOT %Como posso ajudar%): nenhuma mensagem do
+    grupo pode satisfazer a expressão interna.
+    """
+    expr = (pattern or "").strip()
+    if not expr:
+        return True
+    inner = _strip_group_negation(expr)
+    if inner is not None:
+        if not inner:
+            raise trigger_matcher.PatternSyntaxError("NOT exige uma expressão")
+        return not _message_group_any_matches(messages, inner, case_sensitive)
+    return _message_group_any_matches(messages, expr, case_sensitive)
 
 
 def history_matches_trigger(messages: list[dict], trigger: dict) -> bool:
@@ -276,6 +305,16 @@ def update_trigger(mgd, trigger_id: str, data: dict) -> Optional[dict]:
 def delete_trigger(mgd, trigger_id: str) -> bool:
     result = _coll(mgd).delete_one({"trigger_id": trigger_id})
     return result.deleted_count > 0
+
+
+def delete_triggers_bulk(mgd, trigger_ids: list[str]) -> dict:
+    cleaned_ids = [str(trigger_id).strip() for trigger_id in trigger_ids if str(trigger_id).strip()]
+    unique_ids = list(dict.fromkeys(cleaned_ids))
+    if not unique_ids:
+        return {"deleted": 0}
+
+    result = _coll(mgd).delete_many({"trigger_id": {"$in": unique_ids}})
+    return {"deleted": int(result.deleted_count or 0)}
 
 
 def set_trigger_enabled(mgd, trigger_id: str, enabled: bool) -> Optional[dict]:

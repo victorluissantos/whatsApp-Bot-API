@@ -23,7 +23,7 @@
         </div>
 
         <div class="form-group">
-            <label for="pattern_received">Mensagem recebida (LIKE %, AND, OR, IN)</label>
+            <label for="pattern_received">Mensagem recebida (LIKE %, AND, OR, IN, NOT)</label>
             <input type="text" id="pattern_received" name="pattern_received" maxlength="500" value="{{ form.pattern_received }}" placeholder="%preco% and %?%">
             <span class="hint">
                 Avalia o histórico de mensagens <strong>recebidas</strong> (até 50). Deixe vazio se não restringir este lado.
@@ -31,7 +31,7 @@
         </div>
 
         <div class="form-group">
-            <label for="pattern_sent">Mensagem enviada (LIKE %, AND, OR, IN)</label>
+            <label for="pattern_sent">Mensagem enviada (LIKE %, AND, OR, IN, NOT)</label>
             <input type="text" id="pattern_sent" name="pattern_sent" maxlength="500" value="{{ form.pattern_sent }}" placeholder="%promo% or %oferta%">
             <span class="hint">
                 Avalia o histórico de mensagens <strong>enviadas</strong> (sistema ou humano no WhatsApp). Deixe vazio se não restringir este lado.
@@ -44,6 +44,9 @@
                 AND: <code>%preco% and %pr%</code> — as duas condições na mesma mensagem<br>
                 OR: <code>%preco% or %promo%</code> — qualquer uma na mesma mensagem<br>
                 IN: <code>in(preco,valor,promo)</code> — contém qualquer termo<br>
+                NOT: <code>not %spam%</code> — nega uma condição (em uma mensagem)<br>
+                NOT IN: <code>not in(spam,promo)</code> — não contém nenhum dos termos<br>
+                Negação no histórico enviado: <code>not %Como posso ajudar%</code> — dispara só se <em>nenhuma</em> mensagem enviada contiver o termo<br>
                 Combine lados: recebida <code>%oi%</code> + enviada <code>%promo%</code> = ambos devem bater em alguma msg do grupo<br>
                 Pelo menos um dos dois campos é obrigatório.
             </span>

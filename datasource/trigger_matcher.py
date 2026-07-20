@@ -1,4 +1,4 @@
-"""Avaliação de padrões de trigger: LIKE (%), AND, OR e IN(a,b,c)."""
+"""Avaliação de padrões de trigger: LIKE (%), AND, OR, IN(a,b,c), NOT e NOT IN(a,b,c)."""
 from __future__ import annotations
 
 import re
@@ -53,6 +53,20 @@ def _eval_factor(message: str, expression: str, case_sensitive: bool) -> bool:
 
     if _has_outer_parens(expr):
         return _eval_or(message, expr[1:-1].strip(), case_sensitive)
+
+    not_in_match = re.match(r"^not\s+in\s*\((.*)\)\s*$", expr, re.IGNORECASE | re.DOTALL)
+    if not_in_match:
+        args = _split_in_args(not_in_match.group(1))
+        if not args:
+            raise PatternSyntaxError("NOT IN() não pode ser vazio")
+        return not any(_match_like_term(message, arg, case_sensitive) for arg in args)
+
+    not_match = re.match(r"^not\s+(.+)$", expr, re.IGNORECASE | re.DOTALL)
+    if not_match:
+        inner = not_match.group(1).strip()
+        if not inner:
+            raise PatternSyntaxError("NOT exige uma expressão")
+        return not _eval_or(message, inner, case_sensitive)
 
     in_match = re.match(r"^in\s*\((.*)\)\s*$", expr, re.IGNORECASE | re.DOTALL)
     if in_match:
@@ -164,6 +178,7 @@ def _match_like_term(message: str, term: str, case_sensitive: bool) -> bool:
 
 
 def _like_to_regex(like_pattern: str) -> str:
+    # % / _ precisam atravessar quebras de linha (WhatsApp/Brain enviam multilinha).
     if like_pattern == "%%":
         return "^[\\s\\S]*$"
     out: list[str] = ["^"]
@@ -171,10 +186,10 @@ def _like_to_regex(like_pattern: str) -> str:
     while i < len(like_pattern):
         ch = like_pattern[i]
         if ch == "%":
-            out.append(".*")
+            out.append("[\\s\\S]*")
             i += 1
         elif ch == "_":
-            out.append(".")
+            out.append("[\\s\\S]")
             i += 1
         else:
             out.append(_REGEX_ESCAPE.sub(r"\\\1", ch))

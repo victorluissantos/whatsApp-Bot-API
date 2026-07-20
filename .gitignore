@@ -3,3 +3,7 @@ chrome-data*
 static/tmp/*
 erros_log.txt
 .env
+
+exports/*
+imports/*
+whatsapp-history/*  # arquivos de histórico do whatsapp
