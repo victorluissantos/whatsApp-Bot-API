@@ -206,9 +206,12 @@ def _message_group_matches_pattern(
 ) -> bool:
     """
     Avalia o grupo de mensagens contra o padrão.
-    Padrão positivo: ao menos uma mensagem do grupo deve satisfazer a expressão.
-    Padrão com NOT no topo (ex.: NOT %Como posso ajudar%): nenhuma mensagem do
-    grupo pode satisfazer a expressão interna.
+
+    - Padrão só positivo: ao menos uma mensagem do grupo deve satisfazer.
+    - NOT no topo (ex.: not %x%): nenhuma mensagem do grupo pode satisfazer o interno.
+    - AND no topo (ex.: %a% and not %b%): cada fator é avaliado no grupo —
+      positivo = alguma msg bate; NOT = nenhuma msg bate.
+      Assim "Dayane" numa msg e "De qual UF" em outra não burla o not %De qual UF%.
     """
     expr = (pattern or "").strip()
     if not expr:
@@ -218,6 +221,23 @@ def _message_group_matches_pattern(
         if not inner:
             raise trigger_matcher.PatternSyntaxError("NOT exige uma expressão")
         return not _message_group_any_matches(messages, inner, case_sensitive)
+
+    and_parts = trigger_matcher._split_top_level(expr, "and")
+    if len(and_parts) > 1:
+        for part in and_parts:
+            part = part.strip()
+            if not part:
+                raise trigger_matcher.PatternSyntaxError("Expressão vazia entre AND")
+            neg = _strip_group_negation(part)
+            if neg is not None:
+                if not neg:
+                    raise trigger_matcher.PatternSyntaxError("NOT exige uma expressão")
+                if _message_group_any_matches(messages, neg, case_sensitive):
+                    return False
+            elif not _message_group_any_matches(messages, part, case_sensitive):
+                return False
+        return True
+
     return _message_group_any_matches(messages, expr, case_sensitive)
 
 
