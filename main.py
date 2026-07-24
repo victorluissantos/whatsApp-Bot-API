@@ -207,9 +207,9 @@ class TriggerUniqueModel(BaseModel):
 
 class TriggerCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
-    pattern_received: str = Field("", max_length=500)
-    pattern_sent: str = Field("", max_length=500)
-    pattern: Optional[str] = Field(None, max_length=500, description="Legado: alias de pattern_received")
+    pattern_received: str = Field("", max_length=800)
+    pattern_sent: str = Field("", max_length=800)
+    pattern: Optional[str] = Field(None, max_length=800, description="Legado: alias de pattern_received")
     case_sensitive: bool = False
     reply_messages: list[str] = Field(default_factory=list, max_length=triggers_store.MAX_REPLY_MESSAGES)
     reply_message: Optional[str] = Field(None, max_length=triggers_store.MAX_REPLY_MESSAGE_LENGTH)
@@ -237,9 +237,9 @@ class TriggerCreateRequest(BaseModel):
 
 class TriggerUpdateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
-    pattern_received: str = Field("", max_length=500)
-    pattern_sent: str = Field("", max_length=500)
-    pattern: Optional[str] = Field(None, max_length=500, description="Legado: alias de pattern_received")
+    pattern_received: str = Field("", max_length=800)
+    pattern_sent: str = Field("", max_length=800)
+    pattern: Optional[str] = Field(None, max_length=800, description="Legado: alias de pattern_received")
     case_sensitive: bool = False
     reply_messages: list[str] = Field(default_factory=list, max_length=triggers_store.MAX_REPLY_MESSAGES)
     reply_message: Optional[str] = Field(None, max_length=triggers_store.MAX_REPLY_MESSAGE_LENGTH)
@@ -292,7 +292,7 @@ class TriggerEnabledRequest(BaseModel):
 
 
 class TriggerTestMatchRequest(BaseModel):
-    pattern: str = Field(..., max_length=500, description="Expressão: LIKE %, AND, OR, IN(a,b,c)")
+    pattern: str = Field(..., max_length=800, description="Expressão: LIKE %, AND, OR, IN(a,b,c)")
     message: str = Field(..., max_length=2000, description="Texto da mensagem para testar")
     case_sensitive: bool = False
     side: str = Field(

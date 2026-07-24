@@ -24,7 +24,7 @@
 
         <div class="form-group">
             <label for="pattern_received">Mensagem recebida (LIKE %, AND, OR, IN, NOT)</label>
-            <input type="text" id="pattern_received" name="pattern_received" maxlength="500" value="{{ form.pattern_received }}" placeholder="%preco% and %?%">
+            <input type="text" id="pattern_received" name="pattern_received" maxlength="800" value="{{ form.pattern_received }}" placeholder="%preco% and %?%">
             <span class="hint">
                 Avalia o histórico de mensagens <strong>recebidas</strong> (até 50). Deixe vazio se não restringir este lado.
             </span>
@@ -32,7 +32,7 @@
 
         <div class="form-group">
             <label for="pattern_sent">Mensagem enviada (LIKE %, AND, OR, IN, NOT)</label>
-            <input type="text" id="pattern_sent" name="pattern_sent" maxlength="500" value="{{ form.pattern_sent }}" placeholder="%promo% or %oferta%">
+            <input type="text" id="pattern_sent" name="pattern_sent" maxlength="800" value="{{ form.pattern_sent }}" placeholder="%promo% or %oferta%">
             <span class="hint">
                 Avalia o histórico de mensagens <strong>enviadas</strong> (sistema ou humano no WhatsApp). Deixe vazio se não restringir este lado.
             </span>

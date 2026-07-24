@@ -212,15 +212,13 @@ def _message_group_matches_pattern(
     - AND no topo (ex.: %a% and not %b%): cada fator é avaliado no grupo —
       positivo = alguma msg bate; NOT = nenhuma msg bate.
       Assim "Dayane" numa msg e "De qual UF" em outra não burla o not %De qual UF%.
+
+    Importante: AND no topo é avaliado ANTES do NOT de grupo, senão
+    `not %a% and not %b%` vira um único NOT incorreto sobre o resto da expressão.
     """
     expr = (pattern or "").strip()
     if not expr:
         return True
-    inner = _strip_group_negation(expr)
-    if inner is not None:
-        if not inner:
-            raise trigger_matcher.PatternSyntaxError("NOT exige uma expressão")
-        return not _message_group_any_matches(messages, inner, case_sensitive)
 
     and_parts = trigger_matcher._split_top_level(expr, "and")
     if len(and_parts) > 1:
@@ -237,6 +235,12 @@ def _message_group_matches_pattern(
             elif not _message_group_any_matches(messages, part, case_sensitive):
                 return False
         return True
+
+    inner = _strip_group_negation(expr)
+    if inner is not None:
+        if not inner:
+            raise trigger_matcher.PatternSyntaxError("NOT exige uma expressão")
+        return not _message_group_any_matches(messages, inner, case_sensitive)
 
     return _message_group_any_matches(messages, expr, case_sensitive)
 
