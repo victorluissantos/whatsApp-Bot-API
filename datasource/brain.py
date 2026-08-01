@@ -232,12 +232,32 @@ def resolve_message_for_phone(
     return None, last_reason
 
 
+# Motivos em que o Brain cede a vez aos triggers.
+_DEFER_TO_TRIGGERS = frozenset(
+    {
+        "campo_vazio",
+        "api_status_false",
+        "api_erro",
+        "fora_do_horario",
+        "curl_invalido",
+        "telefone_invalido",
+    }
+)
+# Fora do horário: defere sem consumir unique (Brain ainda pode atuar no horário útil).
+_DEFER_WITHOUT_UNIQUE_CLAIM = frozenset({"fora_do_horario"})
+
+
 def defers_to_triggers(reason: str) -> bool:
     """
-    True quando o Brain consultou (ou tentou) a API mas não há mensagem para enviar.
-    Nesses casos os triggers normais devem seguir o fluxo.
+    True quando o Brain não deve enviar e os triggers normais devem seguir.
+    Inclui fora do horário — senão o motor suprime até o fora-de-expediente.
     """
-    return reason in ("campo_vazio", "api_status_false", "api_erro")
+    return reason in _DEFER_TO_TRIGGERS
+
+
+def consumes_unique_on_defer(reason: str) -> bool:
+    """False para fora_do_horario (não queima a 1ª resposta do Brain no dia)."""
+    return reason not in _DEFER_WITHOUT_UNIQUE_CLAIM
 
 
 def record_brain_attempt_without_message(

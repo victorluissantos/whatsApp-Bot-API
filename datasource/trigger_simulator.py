@@ -134,10 +134,11 @@ def _try_brain_simulation(
                 "trigger_id": BRAIN_SIMULATOR_ID,
                 "trigger_name": BRAIN_SIMULATOR_NAME,
                 "status": "skipped",
-                "reason": "fora do horário",
+                "reason": "fora do horário — seguindo triggers",
             }
         )
-        return None, events, False
+        # Não consome unique do Brain: no horário útil ainda pode responder.
+        return None, events, True
 
     unique_cfg = config.get("unique") or {}
     if _has_brain_claim(claimed, unique_cfg, now):
@@ -173,13 +174,17 @@ def _try_brain_simulation(
                 "trigger_name": BRAIN_SIMULATOR_NAME,
                 "status": "skipped",
                 "reason": (
-                    f"campo {field!r} vazio — seguindo triggers"
+                    f"{reason or 'sem mensagem'} — seguindo triggers"
                     if defer_triggers
-                    else f"campo {field!r} vazio ou API sem resposta"
+                    else f"campo {field!r} vazio ou API sem resposta ({reason})"
                 ),
             }
         )
-        if defer_triggers and unique_cfg.get("enabled"):
+        if (
+            defer_triggers
+            and unique_cfg.get("enabled")
+            and brain_store.consumes_unique_on_defer(reason)
+        ):
             scope_key = triggers_store.unique_scope_key(
                 str(unique_cfg.get("scope") or "day"), now
             )

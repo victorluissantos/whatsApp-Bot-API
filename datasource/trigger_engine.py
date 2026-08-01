@@ -787,7 +787,8 @@ def _brain_first_inline(
     )
     if not message:
         if brain_store.defers_to_triggers(reason):
-            brain_store.record_brain_attempt_without_message(mgd, contact_key, now)
+            if brain_store.consumes_unique_on_defer(reason):
+                brain_store.record_brain_attempt_without_message(mgd, contact_key, now)
             logger.info(
                 "Brain sem mensagem para %s (%s) — seguindo triggers",
                 phone,
@@ -980,7 +981,8 @@ def _prepare_brain_message(
     )
     if not message:
         if brain_store.defers_to_triggers(reason):
-            brain_store.record_brain_attempt_without_message(mgd, contact_key, now)
+            if brain_store.consumes_unique_on_defer(reason):
+                brain_store.record_brain_attempt_without_message(mgd, contact_key, now)
             logger.info(
                 "Brain sem mensagem para %s (%s) — seguindo triggers",
                 phone,
