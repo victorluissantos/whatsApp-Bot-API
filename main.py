@@ -1992,6 +1992,78 @@ async def get_chats_unread(
     }
 
 
+@app.post("/resetUnreadBaseline", tags=["Chats"])
+async def reset_unread_baseline(
+    process_now: bool = Query(
+        True,
+        description="Se true, lê o #pane-side e reavalia triggers/brain imediatamente",
+    ),
+    include_zero_unread: bool = Query(
+        True,
+        description="Se true, inclui chats com unreadCount < 1 (bolinha sem número)",
+    ),
+):
+    """
+    Zera o cache em memória do #pane-side e o baseline de triggers
+    (`clear_cache` + `reset_baseline`), depois opcionalmente força um ciclo
+    de atendimento — inclusive chats com unread menor que 1.
+    """
+    navegador_local = obter_navegador()
+    whats = Whats.Run()
+    if not whats.isLogado(navegador_local):
+        raise HTTPException(status_code=400, detail="WhatsApp não está conectado")
+
+    unread_pane_cache.clear_cache()
+    trigger_engine.reset_baseline()
+
+    if not process_now:
+        return {
+            "success": True,
+            "cleared": True,
+            "processed": False,
+            "message": "Cache e baseline zerados; próximo poll do watcher reavaliará.",
+        }
+
+    try:
+        max_chats = int(os.environ.get("UNREAD_PANE_MAX_CHATS", "100") or "100")
+    except ValueError:
+        max_chats = 100
+    max_chats = max(1, min(max_chats, 200))
+
+    raw = Chats.Run().getUnreadChatsFromPaneSide(navegador_local, limit=max_chats)
+    if not isinstance(raw, list):
+        raw = []
+    fp = unread_pane_cache.fingerprint_for_chats(raw)
+    unread_pane_cache.update_if_changed(raw, fp)
+
+    try:
+        stats = trigger_engine.process_unread_changes(
+            mgd,
+            [],
+            raw,
+            nav=navegador_local,
+            force_all=include_zero_unread,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    return {
+        "success": True,
+        "cleared": True,
+        "processed": True,
+        "include_zero_unread": include_zero_unread,
+        "chats_in_engine": len(raw),
+        "has_unread": unread_pane_cache.chats_have_unread(raw),
+        "to_evaluate": len(
+            trigger_engine.chats_to_evaluate(
+                raw, include_zero_unread=include_zero_unread
+            )
+        ),
+        "stats": stats,
+        "message": "Cache/baseline zerados e ciclo de atendimento executado.",
+    }
+
+
 @app.get("/getMessage", tags=["Mensagens"], response_model=GetMessagesResponse)
 async def get_message(phone: str = Query(..., description="Número de telefone do contato")):
     """

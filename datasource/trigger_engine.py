@@ -74,10 +74,19 @@ def forget_chat(phone: Optional[str] = None, name: Optional[str] = None) -> None
     logger.info("Triggers: baseline esquecido para phone=%s name=%s", phone, name)
 
 
-def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], nav=None) -> dict:
+def process_unread_changes(
+    mgd,
+    old_chats: list[dict],
+    new_chats: list[dict],
+    nav=None,
+    force_all: bool = False,
+) -> dict:
     """
     Avalia chats que mudaram na lista de não lidas e enfileira respostas dos triggers.
     Retorna estatísticas do ciclo.
+
+    force_all: reavalia chats do painel mesmo com unreadCount < 1 (ex.: bolinha
+    verde sem número). Usado pelo reset manual de baseline.
     """
     global _TRIGGER_BOOTSTRAPPED
     stats = {"changed": 0, "matched": 0, "queued": 0, "skipped": 0, "errors": 0}
@@ -86,23 +95,26 @@ def process_unread_changes(mgd, old_chats: list[dict], new_chats: list[dict], na
         # Não engole unread existentes no bootstrap: chats com unread>0 ainda
         # entram em diff_changed (prev_msg=None) e podem disparar. Só marca
         # como já visto os que estão no painel sem contador (já lidos/irrelevantes).
-        for chat in new_chats:
-            if _unread_int(chat) > 0:
-                continue
-            key = _chat_key(chat)
-            msg = (chat.get("lastMessage") or "").strip()
-            if key and msg:
-                _TRIGGER_SEEN[key] = msg
+        # Com force_all, não marca ninguém — todos elegíveis entram na avaliação.
+        if not force_all:
+            for chat in new_chats:
+                if _unread_int(chat) > 0:
+                    continue
+                key = _chat_key(chat)
+                msg = (chat.get("lastMessage") or "").strip()
+                if key and msg:
+                    _TRIGGER_SEEN[key] = msg
         _TRIGGER_BOOTSTRAPPED = True
         logger.info(
-            "Triggers: baseline inicial (%s chats marcados como já vistos; unread ainda serão avaliados).",
+            "Triggers: baseline inicial (%s chats marcados como já vistos; unread ainda serão avaliados; force_all=%s).",
             len(_TRIGGER_SEEN),
+            force_all,
         )
         # Continua o fluxo normalmente para avaliar unread existentes.
 
     # Avalia unread atuais + chats com lastMessage nova. Unread parado após
     # soft-delete também precisa ser reavaliado (não só "mensagem mudou").
-    to_process = chats_to_evaluate(new_chats)
+    to_process = chats_to_evaluate(new_chats, include_zero_unread=force_all)
     stats["changed"] = len(to_process)
     if not to_process:
         if brain_store.is_enabled(mgd) and any(
@@ -604,14 +616,18 @@ def diff_changed_chats(new_chats: list[dict]) -> list[dict]:
     return changed
 
 
-def chats_to_evaluate(new_chats: list[dict]) -> list[dict]:
+def chats_to_evaluate(
+    new_chats: list[dict],
+    include_zero_unread: bool = False,
+) -> list[dict]:
     """
-    Só chats com contador unread >= 1 no DOM (ex.: bolinha com "1").
-    Bolinha verde sem número = marcado como não lido, sem mensagem nova — ignorar.
-  """
+    Por padrão só chats com contador unread >= 1 no DOM (ex.: bolinha com "1").
+    Bolinha verde sem número = marcado como não lido, sem mensagem nova — ignorar,
+    salvo include_zero_unread=True (reset manual de baseline).
+    """
     result: list[dict] = []
     for chat in new_chats:
-        if _unread_int(chat) < 1:
+        if not include_zero_unread and _unread_int(chat) < 1:
             continue
         last_msg = (chat.get("lastMessage") or "").strip()
         if not last_msg or last_msg == "Sem mensagem":
