@@ -470,6 +470,7 @@ def _validate_and_send_inline(
             dedup_key,
             chat_key,
             keep_unseen,
+            messages=messages,
         ):
             messages_runner._leave_conversation(nav, restore_unread=False)
             return True
@@ -818,7 +819,17 @@ def _brain_first_inline(
         )
         return False, False
 
+    only_empty = brain_store.requires_empty_history(config)
     if not send_lock.acquire(timeout=_BROWSER_LOCK_TIMEOUT_SECONDS):
+        if only_empty:
+            # Precisa abrir o chat para validar histórico — não enfileira às cegas.
+            logger.warning(
+                "Brain: lock ocupado e only_empty_history ativo — adiando %s",
+                phone,
+            )
+            if chat_key:
+                keep_unseen.add(chat_key)
+            return False, False
         logger.warning(
             "Brain: lock ocupado após API — enfileirando para %s",
             phone,
@@ -850,6 +861,16 @@ def _brain_first_inline(
             return False, False
 
         messages = result.get("messages") or []
+        if only_empty and brain_store.history_has_prior_conversation(messages):
+            logger.info(
+                "Brain: chat %s já tem conversa (only_empty_history) — seguindo triggers",
+                phone,
+            )
+            brain_store.record_brain_attempt_without_message(mgd, contact_key, now)
+            stats["skipped"] += 1
+            messages_runner._leave_conversation(nav, restore_unread=True)
+            return False, True
+
         if not _chat_allowed_for_reply(
             mgd, phone, messages, message_text, strict_preview=False
         ):
@@ -1029,6 +1050,17 @@ def _try_brain_enqueue(
     chat_key: str,
     keep_unseen: set[str],
 ) -> tuple[bool, bool]:
+    config = brain_store.get_config(mgd)
+    if brain_store.requires_empty_history(config):
+        # Sem navegador aberto não dá para validar getMessages — não dispara.
+        logger.info(
+            "Brain: only_empty_history ativo sem chat aberto — adiando %s",
+            phone,
+        )
+        if chat_key:
+            keep_unseen.add(chat_key)
+        return False, False
+
     prepared, defer_triggers = _prepare_brain_message(
         mgd, phone, contact_key, now, stats, chat_key, keep_unseen
     )
@@ -1055,7 +1087,20 @@ def _try_brain_inline(
     dedup_key: str,
     chat_key: str,
     keep_unseen: set[str],
+    messages: Optional[list] = None,
 ) -> bool:
+    config = brain_store.get_config(mgd)
+    if brain_store.requires_empty_history(config) and brain_store.history_has_prior_conversation(
+        messages or []
+    ):
+        logger.info(
+            "Brain: chat %s já tem conversa (only_empty_history) — não dispara",
+            phone,
+        )
+        brain_store.record_brain_attempt_without_message(mgd, contact_key, now)
+        stats["skipped"] += 1
+        return False
+
     prepared, defer_triggers = _prepare_brain_message(
         mgd, phone, contact_key, now, stats, chat_key, keep_unseen
     )

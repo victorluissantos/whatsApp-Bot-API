@@ -73,6 +73,7 @@ def save_config(mgd, data: dict) -> dict:
         "request": request,
         "response_field": response_field,
         "enabled": bool(data.get("enabled", False)),
+        "only_empty_history": bool(data.get("only_empty_history", False)),
         "schedule": triggers_store.normalize_schedule(data.get("schedule") or {}),
         "unique": triggers_store.normalize_unique(data.get("unique") or {}),
         "updated_at": now,
@@ -494,6 +495,26 @@ def _doc_to_dict(doc: dict) -> dict:
     return out
 
 
+def requires_empty_history(config: Optional[dict]) -> bool:
+    """True se o Brain só deve disparar em chats sem conversa prévia."""
+    return bool(config and config.get("only_empty_history"))
+
+
+def history_has_prior_conversation(messages: list) -> bool:
+    """
+    True se getMessages indica conversa já existente.
+    - Vazio: sem conversa.
+    - Só 1 mensagem recebida: trata como primeiro contato (a própria unread).
+    - Qualquer enviada ou mais de 1 mensagem: já há conversa.
+    """
+    if not messages:
+        return False
+    for msg in messages:
+        if str(msg.get("origem") or "").strip().lower() == "enviada":
+            return True
+    return len(messages) > 1
+
+
 def config_to_form(config: Optional[dict]) -> dict:
     if not config:
         return _default_form()
@@ -503,6 +524,7 @@ def config_to_form(config: Optional[dict]) -> dict:
         "curl": config.get("curl") or "",
         "response_field": config.get("response_field") or "",
         "enabled": bool(config.get("enabled")),
+        "only_empty_history": bool(config.get("only_empty_history")),
         "days_of_week": schedule.get("days_of_week") or [0, 1, 2, 3, 4, 5, 6],
         "all_day": bool(schedule.get("all_day", True)),
         "time_start": schedule.get("time_start") or "09:00",
@@ -520,6 +542,7 @@ def _default_form() -> dict:
         "curl": "",
         "response_field": "",
         "enabled": False,
+        "only_empty_history": False,
         "days_of_week": [0, 1, 2, 3, 4, 5, 6],
         "all_day": True,
         "time_start": "09:00",
@@ -542,12 +565,14 @@ def form_to_payload(
     time_end: str,
     unique_enabled: Optional[str],
     unique_scope: str,
+    only_empty_history: Optional[str] = None,
 ) -> dict:
     days = [int(d) for d in days_of_week if str(d).isdigit()]
     return {
         "curl": curl,
         "response_field": response_field,
         "enabled": enabled is not None,
+        "only_empty_history": only_empty_history is not None,
         "schedule": triggers_store.normalize_schedule(
             {
                 "days_of_week": days,

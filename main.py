@@ -1037,6 +1037,7 @@ async def brain_save_submit(
     time_end: str = Form("18:00"),
     unique_enabled: Optional[str] = Form(None),
     unique_scope: str = Form("day"),
+    only_empty_history: Optional[str] = Form(None),
 ):
     payload = brain_store.form_to_payload(
         curl,
@@ -1048,6 +1049,7 @@ async def brain_save_submit(
         time_end,
         unique_enabled,
         unique_scope,
+        only_empty_history,
     )
     try:
         brain_store.save_config(mgd, payload)
