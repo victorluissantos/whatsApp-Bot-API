@@ -33,6 +33,7 @@ from datasource import trigger_engine
 from datasource.app_timezone import get_timezone_name, now_local
 from datasource import trigger_matcher
 from datasource import brain as brain_store
+from datasource import ui_modals
 
 # Configuração de logging
 logging.basicConfig(level=logging.DEBUG)
@@ -658,11 +659,15 @@ def _run_message_queue_worker():
 
 def _run_unread_filter_watcher():
     """
-    Quando o QR termina e a sessão fica logada, tenta clicar no filtro por texto
-    (Não lidas / Unread / …). Repete tentativas com lock curto para não travar envios.
+    Quando o QR termina e a sessão fica logada:
+    1) fecha modais bloqueantes (ex.: Novidades / Continuar)
+    2) clica no filtro Não lidas / Unread
+
+    Enquanto logado, também fecha o confirm-popup se reaparecer (atualizações futuras).
     """
     global _prev_logged_in_for_unread_filter
     whats = Whats.Run()
+    modals = ui_modals.Run()
     while True:
         time.sleep(1.5)
         try:
@@ -673,12 +678,26 @@ def _run_unread_filter_watcher():
             logged = whats.isLogado(nav)
         except Exception:
             logged = False
+
+        if logged:
+            try:
+                if modals.has_confirm_popup(nav):
+                    if whatsapp_send_lock.acquire(timeout=5):
+                        try:
+                            modals.dismiss_blocking_modals_once(nav)
+                        finally:
+                            whatsapp_send_lock.release()
+            except Exception as e:
+                logging.debug("Falha ao fechar modal bloqueante: %s", e)
+
         if logged and not _prev_logged_in_for_unread_filter:
             deadline = time.time() + 120
             clicked = False
             while time.time() < deadline:
                 if whatsapp_send_lock.acquire(timeout=10):
                     try:
+                        # Modal de novidades cobre a UI; fechar antes do filtro.
+                        modals.dismiss_blocking_modals_once(nav)
                         if whats.try_click_unread_filter_once(nav):
                             clicked = True
                             break
