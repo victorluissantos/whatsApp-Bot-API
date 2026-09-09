@@ -34,17 +34,36 @@
     </div>
 
     {% if triggers %}
-    <div class="header-actions" style="margin-bottom: 12px; gap: 8px;">
+    <div class="list-toolbar">
+        <label class="sr-only" for="triggerSearch">Buscar triggers</label>
+        <input
+            type="search"
+            id="triggerSearch"
+            class="trigger-search"
+            placeholder="Buscar por nome, dia, horário, recorrência ou trecho de mensagem"
+            autocomplete="off"
+            oninput="applyTriggerFilter()"
+            onsearch="applyTriggerFilter()"
+            onchange="applyTriggerFilter()"
+        >
+        <small id="filterCountLabel"></small>
+    </div>
+
+    <div class="header-actions list-toolbar-actions">
+        <button type="button" id="bulkActivateBtn" class="btn" onclick="submitBulkActivate()" disabled>
+            Ativar selecionados
+        </button>
         <button type="button" id="bulkDeactivateBtn" class="btn btn-secondary" onclick="submitBulkDeactivate()" disabled>
             Inativar selecionados
         </button>
         <button type="button" id="bulkDeleteBtn" class="btn-danger" onclick="submitBulkDelete()" disabled>
             Excluir selecionados
         </button>
-        <button type="button" class="btn btn-secondary" onclick="toggleAllTriggers(this)">Selecionar todos</button>
+        <button type="button" id="toggleAllBtn" class="btn btn-secondary" onclick="toggleAllTriggers(this)">Selecionar todos</button>
         <small id="selectedCountLabel">0 selecionado(s)</small>
     </div>
 
+    <form id="bulkActivateForm" method="post" action="/triggers/activate" style="display:none;"></form>
     <form id="bulkDeactivateForm" method="post" action="/triggers/deactivate" style="display:none;"></form>
     <form id="bulkDeleteForm" method="post" action="/triggers/delete" style="display:none;"></form>
 
@@ -65,12 +84,13 @@
             </thead>
             <tbody>
                 {% for t in triggers %}
-                <tr>
+                <tr class="trigger-row" data-search="{{ t.search_text }}">
                     <td>
                         <input
                             type="checkbox"
                             class="trigger-checkbox"
                             value="{{ t.id }}"
+                            data-enabled="{{ 'true' if t.enabled else 'false' }}"
                             onchange="updateTriggerSelectionState()"
                         >
                     </td>
@@ -106,6 +126,11 @@
                                 <input type="hidden" name="trigger_ids" value="{{ t.id }}">
                                 <button type="submit" class="btn btn-secondary btn-sm">Inativar</button>
                             </form>
+                            {% else %}
+                            <form class="inline-form" method="post" action="/triggers/activate" onsubmit="return confirm('Ativar o trigger &quot;{{ t.name }}&quot;?');">
+                                <input type="hidden" name="trigger_ids" value="{{ t.id }}">
+                                <button type="submit" class="btn btn-sm">Ativar</button>
+                            </form>
                             {% endif %}
                             <form class="inline-form" method="post" action="/triggers/{{ t.id }}/delete" onsubmit="return confirm('Excluir o trigger &quot;{{ t.name }}&quot;?');">
                                 <button type="submit" class="btn-danger btn-sm">Excluir</button>
@@ -116,6 +141,9 @@
                 {% endfor %}
             </tbody>
         </table>
+        <div id="triggerFilterEmpty" class="empty-state empty-state-filter" hidden>
+            <p>Nenhum trigger encontrado com esse filtro.</p>
+        </div>
     </div>
     {% else %}
     <div class="empty-state">
@@ -146,57 +174,113 @@ function submitImport() {
     document.getElementById('importForm').submit();
 }
 
+function getVisibleTriggerRows() {
+    return Array.from(document.querySelectorAll('.trigger-row')).filter((row) => !row.hidden);
+}
+
+function getVisibleTriggerCheckboxes() {
+    return getVisibleTriggerRows()
+        .map((row) => row.querySelector('.trigger-checkbox'))
+        .filter(Boolean);
+}
+
+function getSelectedTriggerCheckboxes() {
+    return Array.from(document.querySelectorAll('.trigger-checkbox:checked'));
+}
+
 function getSelectedTriggerIds() {
-    return Array.from(document.querySelectorAll('.trigger-checkbox:checked')).map((el) => el.value);
+    return getSelectedTriggerCheckboxes().map((el) => el.value);
 }
 
 function updateTriggerSelectionState() {
-    const selectedIds = getSelectedTriggerIds();
-    const totalCheckboxes = document.querySelectorAll('.trigger-checkbox').length;
+    const selected = getSelectedTriggerCheckboxes();
+    const visibleCheckboxes = getVisibleTriggerCheckboxes();
     const selectAll = document.getElementById('selectAllTriggers');
-    const bulkBtn = document.getElementById('bulkDeactivateBtn');
+    const bulkActivateBtn = document.getElementById('bulkActivateBtn');
+    const bulkDeactivateBtn = document.getElementById('bulkDeactivateBtn');
     const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
     const selectedLabel = document.getElementById('selectedCountLabel');
-    const hasSelection = selectedIds.length === 0;
+    const toggleAllBtn = document.getElementById('toggleAllBtn');
+    const hasInactiveSelected = selected.some((el) => el.dataset.enabled === 'false');
+    const hasActiveSelected = selected.some((el) => el.dataset.enabled === 'true');
+    const visibleChecked = visibleCheckboxes.filter((el) => el.checked).length;
 
     if (selectAll) {
-        selectAll.checked = selectedIds.length > 0 && selectedIds.length === totalCheckboxes;
+        selectAll.checked = visibleCheckboxes.length > 0 && visibleChecked === visibleCheckboxes.length;
+        selectAll.indeterminate = visibleChecked > 0 && visibleChecked < visibleCheckboxes.length;
     }
-    if (bulkBtn) {
-        bulkBtn.disabled = hasSelection;
+    if (bulkActivateBtn) {
+        bulkActivateBtn.disabled = !hasInactiveSelected;
+    }
+    if (bulkDeactivateBtn) {
+        bulkDeactivateBtn.disabled = !hasActiveSelected;
     }
     if (bulkDeleteBtn) {
-        bulkDeleteBtn.disabled = hasSelection;
+        bulkDeleteBtn.disabled = selected.length === 0;
     }
     if (selectedLabel) {
-        selectedLabel.textContent = `${selectedIds.length} selecionado(s)`;
+        selectedLabel.textContent = `${selected.length} selecionado(s)`;
     }
+    if (toggleAllBtn) {
+        const shouldSelectAll = visibleCheckboxes.some((el) => !el.checked);
+        toggleAllBtn.textContent = shouldSelectAll ? 'Selecionar todos' : 'Limpar seleção';
+    }
+}
+
+function applyTriggerFilter() {
+    const searchInput = document.getElementById('triggerSearch');
+    if (!searchInput) return;
+
+    const query = (searchInput.value || '').trim().toLowerCase();
+    const tokens = query.split(/\s+/).filter(Boolean);
+    const rows = Array.from(document.querySelectorAll('.trigger-row'));
+    let visible = 0;
+
+    rows.forEach((row) => {
+        const haystack = row.getAttribute('data-search') || '';
+        const match = tokens.every((token) => haystack.includes(token));
+        row.hidden = tokens.length > 0 && !match;
+        if (!row.hidden) visible += 1;
+    });
+
+    const emptyEl = document.getElementById('triggerFilterEmpty');
+    const table = document.querySelector('.trigger-table');
+    if (emptyEl) {
+        emptyEl.hidden = visible > 0;
+    }
+    if (table) {
+        table.hidden = visible === 0;
+    }
+
+    const filterLabel = document.getElementById('filterCountLabel');
+    if (filterLabel) {
+        filterLabel.textContent = tokens.length
+            ? `${visible} de ${rows.length} visível(is)`
+            : '';
+    }
+
+    updateTriggerSelectionState();
 }
 
 function onToggleAllFromHeader(headerCheckbox) {
     const checked = !!headerCheckbox.checked;
-    document.querySelectorAll('.trigger-checkbox').forEach((el) => {
+    getVisibleTriggerCheckboxes().forEach((el) => {
         el.checked = checked;
     });
     updateTriggerSelectionState();
 }
 
-function toggleAllTriggers(btn) {
-    const checkboxes = Array.from(document.querySelectorAll('.trigger-checkbox'));
+function toggleAllTriggers() {
+    const checkboxes = getVisibleTriggerCheckboxes();
     const shouldSelectAll = checkboxes.some((el) => !el.checked);
     checkboxes.forEach((el) => {
         el.checked = shouldSelectAll;
     });
-    const selectAll = document.getElementById('selectAllTriggers');
-    if (selectAll) {
-        selectAll.checked = shouldSelectAll && checkboxes.length > 0;
-    }
-    btn.textContent = shouldSelectAll ? 'Limpar seleção' : 'Selecionar todos';
     updateTriggerSelectionState();
 }
 
-function submitBulkForm(formId, confirmMsg) {
-    const selectedIds = getSelectedTriggerIds();
+function submitBulkForm(formId, confirmMsg, ids) {
+    const selectedIds = ids || getSelectedTriggerIds();
     if (!selectedIds.length) return;
     if (!confirm(confirmMsg.replace('{n}', String(selectedIds.length)))) return;
 
@@ -212,10 +296,25 @@ function submitBulkForm(formId, confirmMsg) {
     form.submit();
 }
 
+function submitBulkActivate() {
+    const ids = getSelectedTriggerCheckboxes()
+        .filter((el) => el.dataset.enabled === 'false')
+        .map((el) => el.value);
+    submitBulkForm(
+        'bulkActivateForm',
+        'Ativar {n} trigger(s) inativo(s) selecionado(s)?',
+        ids
+    );
+}
+
 function submitBulkDeactivate() {
+    const ids = getSelectedTriggerCheckboxes()
+        .filter((el) => el.dataset.enabled === 'true')
+        .map((el) => el.value);
     submitBulkForm(
         'bulkDeactivateForm',
-        'Inativar {n} trigger(s) selecionado(s)?'
+        'Inativar {n} trigger(s) ativo(s) selecionado(s)?',
+        ids
     );
 }
 
@@ -226,6 +325,6 @@ function submitBulkDelete() {
     );
 }
 
-updateTriggerSelectionState();
+applyTriggerFilter();
 </script>
 {% endblock %}

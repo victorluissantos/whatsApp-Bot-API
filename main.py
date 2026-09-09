@@ -517,12 +517,47 @@ def _form_from_submission(
     }
 
 
+_DAY_SEARCH_ALIASES = {
+    0: "seg segunda segunda-feira",
+    1: "ter terca terça terça-feira",
+    2: "qua quarta quarta-feira",
+    3: "qui quinta quinta-feira",
+    4: "sex sexta sexta-feira",
+    5: "sab sáb sabado sábado",
+    6: "dom domingo",
+}
+
+
+def _trigger_search_text(item: dict, schedule_summary: str, unique_summary: str) -> str:
+    schedule = item.get("schedule") or {}
+    unique = item.get("unique") or {}
+    parts = [
+        str(item.get("name") or ""),
+        str(item.get("pattern_received") or ""),
+        str(item.get("pattern_sent") or ""),
+        str(item.get("pattern") or ""),
+        schedule_summary,
+        unique_summary,
+        "ativo" if item.get("enabled") else "inativo",
+        " ".join(triggers_store.get_reply_messages(item)),
+        str(schedule.get("time_start") or ""),
+        str(schedule.get("time_end") or ""),
+        str(unique.get("scope") or ""),
+        "repetivel repetível" if not unique.get("enabled") else "unica única recorrencia recorrência",
+        "dia todo" if schedule.get("all_day") else "",
+    ]
+    for day in schedule.get("days_of_week") or []:
+        parts.append(_DAY_SEARCH_ALIASES.get(int(day), ""))
+    return " ".join(parts).lower()
+
+
 def _enrich_trigger_rows(items: list[dict]) -> list[dict]:
     rows = []
     for item in items:
         row = dict(item)
         row["schedule_summary"] = triggers_store.format_schedule_summary(item.get("schedule") or {})
         row["unique_summary"] = triggers_store.format_unique_summary(item.get("unique") or {})
+        row["search_text"] = _trigger_search_text(item, row["schedule_summary"], row["unique_summary"])
         rows.append(row)
     return rows
 
@@ -1409,6 +1444,23 @@ async def triggers_deactivate_submit(
     unchanged = result["matched"] - result["modified"]
     if unchanged > 0:
         msg += f"; {unchanged} já estava(m) inativo(s)"
+    params = urlencode({"msg": msg})
+    return RedirectResponse(url=f"/triggers?{params}", status_code=303)
+
+
+@app.post("/triggers/activate", include_in_schema=False)
+async def triggers_activate_submit(
+    trigger_ids: Annotated[list[str], Form()] = [],
+):
+    result = triggers_store.set_triggers_enabled_bulk(mgd, trigger_ids, True)
+    if result["matched"] == 0:
+        params = urlencode({"error": "Nenhum trigger válido foi selecionado para ativar"})
+        return RedirectResponse(url=f"/triggers?{params}", status_code=303)
+
+    msg = f"{result['modified']} trigger(s) ativado(s)"
+    unchanged = result["matched"] - result["modified"]
+    if unchanged > 0:
+        msg += f"; {unchanged} já estava(m) ativo(s)"
     params = urlencode({"msg": msg})
     return RedirectResponse(url=f"/triggers?{params}", status_code=303)
 
