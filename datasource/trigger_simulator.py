@@ -97,6 +97,11 @@ def _evaluate_trigger_candidates(
 
         candidates.append(trigger)
 
+    candidates = triggers_store.resolve_info_reciclagem_candidates(
+        messages,
+        candidates,
+        eligible_triggers=active_triggers,
+    )
     return candidates, events
 
 

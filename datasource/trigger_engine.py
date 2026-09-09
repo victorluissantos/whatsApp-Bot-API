@@ -261,6 +261,15 @@ def process_unread_changes(
                 for t in eligible_triggers
                 if triggers_store.preview_matches_trigger(message_text, t)
             ]
+            if candidates:
+                preview_messages = [
+                    {"origem": "recebida", "message": message_text},
+                ]
+                candidates = triggers_store.resolve_info_reciclagem_candidates(
+                    preview_messages,
+                    candidates,
+                    eligible_triggers=eligible_triggers,
+                )
             if not candidates:
                 logger.info(
                     "Triggers: chat %s msg=%r — nenhum trigger disparou (preview/horário/unique)",
@@ -494,6 +503,13 @@ def _validate_and_send_inline(
             if chat_opened:
                 messages_runner._leave_conversation(nav, restore_unread=True)
             return False
+
+        # Evita enviar preço de 2+ UFs quando o cliente está em dúvida (Curitiba + SC etc.)
+        candidates = triggers_store.resolve_info_reciclagem_candidates(
+            messages,
+            candidates,
+            eligible_triggers=eligible_triggers,
+        )
 
         remaining = list(candidates)
         while remaining:

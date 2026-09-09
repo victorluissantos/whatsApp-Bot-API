@@ -266,6 +266,134 @@ def history_matches_trigger(messages: list[dict], trigger: dict) -> bool:
     return True
 
 
+INFO_RECICLAGEM_PREFIX = "Venda — Info Reciclagem "
+UF_AMBIGUOUS_TRIGGER_NAME = "Venda — UF CNH ambígua"
+
+# Marcadores de pergunta de UF (bot) — respostas do cliente depois disso valem para preço.
+_UF_PROMPT_MARKERS = (
+    "de qual estado/uf",
+    "confira na sua cnh",
+    "em qual estado/uf ela está registrada",
+    "em qual estado/uf ela esta registrada",
+    "qual uf pertence a cnh",
+    "qual uf pertence à cnh",
+)
+
+UF_AMBIGUOUS_DEFAULT_REPLIES = [
+    "Sem problema! Para eu te passar o valor certo, confira na sua *CNH física* "
+    "(frente ou verso) em qual Estado/UF ela está registrada — costuma aparecer "
+    "como sigla (ex.: PR, SC, SP).\n\n"
+    "Me diga essa UF que te oriento com o valor do curso.",
+]
+
+
+def is_info_reciclagem_trigger(trigger: dict) -> bool:
+    return str(trigger.get("name") or "").startswith(INFO_RECICLAGEM_PREFIX)
+
+
+def is_uf_ambiguous_trigger(trigger: dict) -> bool:
+    return str(trigger.get("name") or "").strip() == UF_AMBIGUOUS_TRIGGER_NAME
+
+
+def _received_after_last_uf_prompt(messages: list[dict]) -> list[dict]:
+    """Mensagens recebidas após a última pergunta de UF / pedido para conferir na CNH."""
+    last_ask_idx = -1
+    for idx, msg in enumerate(messages):
+        origem = str(msg.get("origem") or "").strip().lower()
+        if origem != "enviada":
+            continue
+        text = str(msg.get("message") or "").strip().lower()
+        if not text:
+            continue
+        if any(marker in text for marker in _UF_PROMPT_MARKERS):
+            last_ask_idx = idx
+    if last_ask_idx < 0:
+        return [
+            m
+            for m in messages
+            if str(m.get("origem") or "").strip().lower() == "recebida"
+        ]
+    return [
+        m
+        for m in messages[last_ask_idx + 1 :]
+        if str(m.get("origem") or "").strip().lower() == "recebida"
+    ]
+
+
+def resolve_info_reciclagem_candidates(
+    messages: list[dict],
+    candidates: list[dict],
+    *,
+    eligible_triggers: Optional[list[dict]] = None,
+) -> list[dict]:
+    """
+    Evita disparar preço de vários Estados ao mesmo tempo.
+
+    Se 2+ triggers "Info Reciclagem {UF}" casam no histórico, reavalia só as
+    respostas do cliente *depois* da última pergunta de UF:
+      - 1 UF clara → mantém só esse trigger
+      - 0 ou 2+ UFs → remove os Info Reciclagem e injeta "UF CNH ambígua"
+        (pedir para conferir a UF na CNH física)
+    """
+    info = [t for t in candidates if is_info_reciclagem_trigger(t)]
+    if len(info) <= 1:
+        return candidates
+
+    others = [t for t in candidates if not is_info_reciclagem_trigger(t)]
+    # Já pedimos para conferir na CNH e ainda não houve resposta útil de UF:
+    # não dispara de novo o mesmo pedido neste ciclo (unique cobre o resto).
+    others = [t for t in others if not is_uf_ambiguous_trigger(t)]
+
+    recent_recv = _received_after_last_uf_prompt(messages)
+    narrowed: list[dict] = []
+    for trigger in info:
+        pattern_received, _ = get_trigger_patterns(trigger)
+        if not pattern_received:
+            continue
+        if _message_group_any_matches(
+            recent_recv, pattern_received, bool(trigger.get("case_sensitive"))
+        ):
+            narrowed.append(trigger)
+
+    if len(narrowed) == 1:
+        logger.info(
+            "Triggers: UF reciclagem desambiguada para %r",
+            narrowed[0].get("name"),
+        )
+        return others + narrowed
+
+    ambiguous = None
+    pool = eligible_triggers if eligible_triggers is not None else candidates
+    for trigger in pool:
+        if is_uf_ambiguous_trigger(trigger):
+            ambiguous = trigger
+            break
+    if ambiguous is None:
+        ambiguous = {
+            "id": "synthetic-uf-ambiguous",
+            "name": UF_AMBIGUOUS_TRIGGER_NAME,
+            "pattern_received": "",
+            "pattern_sent": "",
+            "case_sensitive": False,
+            "reply_messages": list(UF_AMBIGUOUS_DEFAULT_REPLIES),
+            "enabled": True,
+            "unique": {"enabled": True, "scope": "day"},
+            "schedule": {
+                "days_of_week": [0, 1, 2, 3, 4, 5, 6],
+                "all_day": True,
+                "time_start": "00:00",
+                "time_end": "23:59",
+            },
+        }
+
+    matched_names = ", ".join(str(t.get("name") or "") for t in info)
+    logger.info(
+        "Triggers: UF reciclagem ambígua (%s) → pedir conferência na CNH",
+        matched_names,
+    )
+    return others + [ambiguous]
+
+
 def preview_matches_trigger(message_text: str, trigger: dict) -> bool:
     """Fallback sem histórico: só avalia padrão de recebida no preview do painel."""
     pattern_received, pattern_sent = get_trigger_patterns(trigger)
