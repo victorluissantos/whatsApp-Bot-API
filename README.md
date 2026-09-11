@@ -23,6 +23,11 @@ It now uses RabbitMQ for asynchronous message queueing, while MongoDB keeps mess
 ### GET /
 - Home page with API documentation
 
+### POST /sendMessageAsync
+- Enqueues async send (MongoDB + RabbitMQ)
+- Parameters: `phone`, `message`, `unic_sent` (bool), `unRead` (bool), `status` (optional)
+- `status`: default `pending` (will be sent). With `cancelled` the job is stored already cancelled and **will not** be sent
+
 ### POST /sendText
 - Sends text message via WhatsApp
 - Parameters: `phone` (string, max 22 chars), `text` (string, max 800 chars)

@@ -23,6 +23,11 @@ Agora também utiliza RabbitMQ para fila de envio assíncrono de mensagens, mant
 ### GET /
 - Página inicial com documentação da API
 
+### POST /sendMessageAsync
+- Enfileira envio assíncrono (MongoDB + RabbitMQ)
+- Parâmetros: `phone`, `message`, `unic_sent` (bool), `unRead` (bool), `status` (opcional)
+- `status`: default `pending` (será enviado). Com `cancelled` / `cancelado` o job é registrado já cancelado e **não** é enviado
+
 ### POST /sendText
 - Envia mensagem de texto via WhatsApp
 - Parâmetros: `phone` (string, max 22 chars), `text` (string, max 800 chars)

@@ -84,27 +84,42 @@ def _normalize_legacy_phone(phone: str) -> str:
     return "+" + digits
 
 
+# Status iniciais aceitos em /sendMessageAsync (além de aliases PT em main.py)
+ENQUEUE_STATUSES = ("pending", "cancelled")
+
+
 def enqueue_job(
     mgd,
     phone: str,
     message: str,
     unic_sent: bool,
     unRead: bool = False,
+    status: str = "pending",
     trigger_id: Optional[str] = None,
     brain_id: Optional[str] = None,
     contact_key: Optional[str] = None,
     scope_key: Optional[str] = None,
 ) -> str:
+    initial_status = (status or "pending").strip().lower()
+    if initial_status not in ENQUEUE_STATUSES:
+        raise ValueError(
+            f"status inválido para enqueue: '{status}'. Use pending ou cancelled."
+        )
+
     job_id = str(uuid.uuid4())
+    now = datetime.utcnow()
     doc: dict[str, Any] = {
         "job_id": job_id,
         "phone": phone,
         "message": message,
         "unic_sent": bool(unic_sent),
         "unRead": bool(unRead),
-        "status": "pending",
-        "created_at": datetime.utcnow(),
+        "status": initial_status,
+        "created_at": now,
     }
+    if initial_status == "cancelled":
+        doc["result"] = "Criado já cancelado (não será enviado)"
+        doc["processed_at"] = now
     if trigger_id:
         doc["trigger_id"] = str(trigger_id)
     if brain_id:
@@ -114,6 +129,11 @@ def enqueue_job(
     if scope_key:
         doc["scope_key"] = str(scope_key)
     _queue(mgd).insert_one(doc)
+
+    # cancelled: persiste no Mongo sem publicar no RabbitMQ (não será enviado)
+    if initial_status == "cancelled":
+        return job_id
+
     try:
         _publish_to_rabbit(
             {
@@ -122,7 +142,7 @@ def enqueue_job(
                 "message": message,
                 "unic_sent": bool(unic_sent),
                 "unRead": bool(unRead),
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": now.isoformat() + "Z",
             }
         )
     except Exception as e:

@@ -111,6 +111,40 @@ class SendMessageRequest(BaseModel):
     unic_sent: bool = Field(False, description="Evita envio duplicado para o mesmo número")
     unRead: bool = Field(False, description="Marca o chat como não lido após o envio (Ctrl+Alt+Shift+U)")
 
+
+class SendMessageAsyncRequest(SendMessageRequest):
+    status: Literal["pending", "cancelled"] = Field(
+        "pending",
+        description=(
+            "Status inicial do job na fila. Default: pending (será enviado pelo worker). "
+            "Use cancelled para registrar sem enviar (também aceita cancelado/cancelada no body)."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_status(cls, data: Any):
+        if not isinstance(data, dict):
+            return data
+        raw = data.get("status")
+        if raw is None or raw == "":
+            return data
+        key = str(raw).strip().lower()
+        aliases = {
+            "pending": "pending",
+            "pendente": "pending",
+            "cancelled": "cancelled",
+            "canceled": "cancelled",
+            "cancelado": "cancelled",
+            "cancelada": "cancelled",
+        }
+        if key not in aliases:
+            raise ValueError(
+                "status inválido: use pending (pendente) ou cancelled (cancelado/cancelada)"
+            )
+        data = {**data, "status": aliases[key]}
+        return data
+
 class ChatInfo(BaseModel):
     name: str = Field(..., description="Nome do contato")
     phone: Optional[str] = Field(None, description="Número de telefone do contato")
@@ -153,7 +187,10 @@ class DeliveryWebhookResponse(BaseModel):
 
 class SendMessageAsyncResponse(BaseModel):
     success: bool = Field(..., description="Mensagem aceita na fila")
-    queued: bool = Field(True, description="Indica enfileiramento assíncrono")
+    queued: bool = Field(
+        True,
+        description="True se foi publicada no RabbitMQ para envio; False se criada já cancelled",
+    )
     job_id: str = Field(..., description="Identificador do trabalho na fila")
     webhook_configured: bool = Field(..., description="Há webhook para notificar ao enviar")
     webhook_config_missing: bool = Field(
@@ -1698,11 +1735,14 @@ async def delete_delivery_webhook():
 
 
 @app.post("/sendMessageAsync", tags=["Mensagens"], response_model=SendMessageAsyncResponse)
-async def send_message_async(request: SendMessageRequest):
+async def send_message_async(request: SendMessageAsyncRequest):
     """
     Enfileira o envio no MongoDB. O worker envia quando não houver outro envio em andamento
     (endpoint síncrono ou outro item da fila) e a sessão estiver logada. Se a URL única estiver
     configurada (POST /webhook/delivery), recebe um POST com event=async_message_delivered ao terminar.
+
+    Parâmetro opcional `status`: default `pending`. Com `cancelled` (ou cancelado/cancelada),
+    o job é registrado já cancelado e **não** é publicado no RabbitMQ (não será enviado).
     """
     obter_navegador()
 
@@ -1710,10 +1750,28 @@ async def send_message_async(request: SendMessageRequest):
     webhook_ok = bool(hook)
     try:
         job_id = async_queue.enqueue_job(
-            mgd, request.phone, request.message, request.unic_sent, request.unRead
+            mgd,
+            request.phone,
+            request.message,
+            request.unic_sent,
+            request.unRead,
+            status=request.status,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Falha ao enfileirar mensagem no RabbitMQ: {str(e)}")
+
+    if request.status == "cancelled":
+        msg = "Job registrado com status cancelled; a mensagem não será enviada."
+        return SendMessageAsyncResponse(
+            success=True,
+            queued=False,
+            job_id=job_id,
+            webhook_configured=webhook_ok,
+            webhook_config_missing=not webhook_ok,
+            message=msg,
+        )
 
     if webhook_ok:
         msg = "Mensagem enfileirada; a URL configurada em POST /webhook/delivery receberá POST ao concluir o envio."

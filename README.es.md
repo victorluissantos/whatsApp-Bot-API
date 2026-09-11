@@ -23,6 +23,11 @@ Ahora también utiliza RabbitMQ para la cola de envío asíncrono de mensajes, m
 ### GET /
 - Página inicial con documentación de la API
 
+### POST /sendMessageAsync
+- Encola envío asíncrono (MongoDB + RabbitMQ)
+- Parámetros: `phone`, `message`, `unic_sent` (bool), `unRead` (bool), `status` (opcional)
+- `status`: por defecto `pending` (será enviado). Con `cancelled` / `cancelado` el job se registra ya cancelado y **no** se envía
+
 ### POST /sendText
 - Envía mensaje de texto por WhatsApp
 - Parámetros: `phone` (string, máx 22 caracteres), `text` (string, máx 800 caracteres)
